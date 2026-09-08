@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "FB Auto Tool - Add Scrape Group Feed AI",
+  "version": "1.9.40",
+  "description": "Tự động Facebook: kết bạn có lọc, đăng và share bài bằng AI vào nhóm, đăng bài bán hàng, tương tác, cào bài và comment AI.",
+  "permissions": ["storage", "downloads", "debugger", "unlimitedStorage"],
+  "host_permissions": [
+    "*://*.facebook.com/*",
+    "https://api.openai.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.anthropic.com/*",
+    "https://api.groq.com/*",
+    "https://openrouter.ai/*",
+    "https://api.deepseek.com/*",
+    "https://api.mistral.ai/*",
+    "https://*/*"
+  ],
+  "action": {
+    "default_title": "FB Auto Add",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.facebook.com/*"],
+      "js": ["i18n.js", "content.js", "scrape.js", "group.js", "feed.js", "share.js", "sales.js", "trend.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "128": "icon128.png"
+  }
+}

@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FB Auto Tool</title>
+<style>
+  *{box-sizing:border-box;font-family:system-ui,Segoe UI,Roboto,sans-serif}
+  html{width:800px;max-width:800px}
+  body{width:800px;max-width:800px;min-height:420px;max-height:720px;overflow-y:auto;margin:0;padding:14px;background:#f0f2f5}
+  h1{font-size:17px;margin:0 0 10px;color:#1877F2}
+  .tabs{display:flex;gap:6px;margin-bottom:10px}
+  .tabs .tab{flex:1 1 0!important;padding:9px;text-align:center;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;background:#e4e6eb;color:#050505;white-space:nowrap}
+  .tab.active{background:#1877F2;color:#fff}
+  .card{background:#fff;border-radius:10px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.12);margin-bottom:12px}
+  label{font-size:12px;font-weight:600;display:block;margin:8px 0 4px}
+  input,select{width:100%;padding:7px 8px;border:1px solid #ccd0d5;border-radius:6px;font-size:13px}
+  .row{display:flex;gap:8px}
+  .row>div{flex:1}
+  button{width:100%;padding:9px;border:none;border-radius:6px;font-weight:700;cursor:pointer;font-size:13px}
+  #startBtn{background:#1877F2;color:#fff}
+  #startBtn.running{background:#e41e3f}
+  #scanBtn{background:#e4e6eb;color:#050505;margin-top:8px}
+  
+  #panelAdd:not(.hidden){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+  #panelAdd>.card{margin-bottom:0}
+  #panelAdd>.friend-main{grid-column:1/-1}
+
+  #panelGroup:not(.hidden){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+  #panelGroup>.card{margin-bottom:0}
+  #panelGroup>.card.full-width{grid-column:1/-1}
+
+  #panelFeed:not(.hidden){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+  #panelFeed>.card{margin-bottom:0}
+
+  .friend-mode-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:10px}
+  .friend-mode-btn{background:#e4e6eb;color:#050505;border:1px solid transparent;padding:10px 6px}
+  .friend-mode-btn.active{background:#e7f3ff;color:#0866ff;border-color:#86b7fe}
+  .friend-source-panel{margin-top:9px}
+  .friend-group-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-height:230px;overflow:auto;border:1px solid #ccd0d5;border-radius:7px;margin-top:7px;padding:5px}
+  .friend-metrics{display:flex;justify-content:center;gap:16px;color:#65676b;font-size:11px;margin:4px 0 9px}
+  .friend-metrics b{color:#050505}
+  #scrapeBtn{background:#00a400;color:#fff}
+  #scrapeBtn.running{background:#e41e3f}
+  #stopScrapeBtn{background:#e4e6eb;color:#050505;margin-top:6px}
+  .status{font-size:12px;color:#65676b;margin-top:8px;min-height:18px;word-break:break-word}
+  .count{font-size:26px;font-weight:800;text-align:center;color:#1877F2}
+  .hint{font-size:11px;color:#8a8d91;line-height:1.3}
+  .warn{font-size:11px;color:#c0392b;background:#fdecea;padding:6px;border-radius:6px;margin-top:8px}
+  .hidden{display:none}
+  textarea{width:100%;max-width:100%}
+  #joinedGroupList{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 8px}
+  #joinedGroupList>label{min-width:0}
+  #joinedGroupList>label span{overflow:hidden;text-overflow:ellipsis}
+  @media (max-width:700px){
+    html,body{width:680px;max-width:680px}
+    #panelFeed:not(.hidden){display:block}
+    #panelFeed>.card{margin-bottom:12px}
+    #panelGroup:not(.hidden){display:block}
+    #panelGroup>.card{margin-bottom:12px}
+    #joinedGroupList{grid-template-columns:1fr}
+    #panelAdd:not(.hidden){display:block}
+    #panelAdd>.card{margin-bottom:12px}
+    .friend-mode-tabs{grid-template-columns:1fr}
+    .friend-group-list{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+  <h1>FB Auto Tool - Full <span style="font-size:11px;color:#65676b">v1.6.5</span></h1>
+  <div class="tabs" style="flex-wrap:wrap">
+    <div class="tab active" id="tabAdd" style="flex:1 1 45%">🤝 Kết bạn</div>
+    <div class="tab" id="tabScrape" style="flex:1 1 45%">📄 Cào bài</div>
+    <div class="tab" id="tabGroup" style="flex:1 1 45%">👥 Nhóm</div>
+    <div class="tab" id="tabFeed" style="flex:1 1 45%">📰 Bản tin & AI</div>
+  </div>
+
+  <!-- TAB 1: KẾT BẠN -->
+  <div id="panelAdd">
+    <div class="card friend-main">
+      <h3 style="margin:0;font-size:14px;color:#1877F2">Hai chế độ kết bạn</h3>
+      <div class="friend-mode-tabs">
+        <button class="friend-mode-btn active" data-friend-mode="suggestions">1️⃣ Theo gợi ý</button>
+        <button class="friend-mode-btn" data-friend-mode="group-common">2️⃣ Thành viên có điểm chung</button>
+      </div>
+      <div class="count" id="count">0 / 0</div>
+      <div class="friend-metrics"><span>Bỏ qua: <b id="friendSkipped">0</b></span><span>Chưa xác nhận: <b id="friendUncertain">0</b></span></div>
+      <div class="status" id="status">Chọn một chế độ rồi bấm Quét thử hoặc Bắt đầu</div>
+      <div class="row" style="margin-top:8px"><button id="startBtn">▶ Bắt đầu</button><button id="scanBtn">🔍 Quét thử, không gửi</button></div>
+      <div class="row" style="margin-top:7px"><button id="friendResetBtn" style="background:#ffebe6;color:#c0392b">↺ Reset tiến trình</button><button id="friendClearHistoryBtn" style="background:#fff3e0;color:#e65100">🧹 Xóa lịch sử chống trùng</button></div>
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 7px;font-size:13px;color:#00897b">Nguồn kết bạn</h3>
+      <div id="friendSuggestionsPanel" class="friend-source-panel">
+        <p class="hint">Tự mở trang <b>Gợi ý kết bạn</b> và chỉ lấy nút thuộc thẻ hồ sơ trong vùng nội dung chính.</p>
+        <button id="friendOpenSuggestionsBtn" style="background:#e7f3ff;color:#0866ff">Mở trang Gợi ý kết bạn</button>
+      </div>
+      <div id="friendGroupPanel" class="friend-source-panel hidden">
+        <div class="row"><button id="loadFriendGroupsBtn" style="background:#e7f3ff;color:#0866ff">🔄 Tải danh sách nhóm</button><button id="selectAllFriendGroupsBtn" style="background:#e4e6eb;color:#050505">☑ Chọn tất cả</button></div>
+        <label>Lọc theo tên nhóm</label>
+        <input id="friendGroupKeyword" type="text" placeholder="VD: máy tính, kinh doanh, Hà Nội">
+        <div id="friendGroupList" class="friend-group-list"><div class="hint" style="padding:6px">Chưa tải danh sách nhóm</div></div>
+        <p class="hint">Tự chờ Facebook tải mục “Thành viên có điểm chung”, bấm “Xem tất cả”, tiếp tục chờ nút “Thêm bạn bè” rồi kết lần lượt từ trên xuống.</p>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 7px;font-size:13px;color:#6a1b9a">Cấu hình dùng chung</h3>
+      <label>Giãn cách giữa mỗi lời mời</label>
+      <div class="row">
+        <div><label>Min (giây)</label><input id="minDelay" type="number" min="1" value="15"></div>
+        <div><label>Max (giây)</label><input id="maxDelay" type="number" min="1" value="30"></div>
+      </div>
+      <div class="row">
+        <div><label>Số lượng tối đa</label><input id="maxRequests" type="number" min="1" max="100" value="10"></div>
+        <div><label>Số bạn chung tối thiểu</label><input id="friendMinMutual" type="number" min="0" max="999" value="0"></div>
+      </div>
+      <p class="hint">Lần gửi đầu tiên cũng phải chờ đủ delay. Chỉ tăng bộ đếm khi Facebook xác nhận đã gửi.</p>
+      <div class="warn">Nếu Facebook cảnh báo, giới hạn hoặc yêu cầu xác minh, tính năng sẽ dừng và không cố vượt hạn chế.</div>
+    </div>
+  </div>
+
+  <!-- TAB 2: CÀO BÀI -->
+  <div id="panelScrape" class="hidden">
+    <div class="card">
+      <div class="count" id="scrapeCount">0 bài</div>
+      <div class="status" id="scrapeStatus">Mở profile/page cần cào rồi bấm Bắt đầu</div>
+      <label>Số bài cần cào (không giới hạn 200 nữa)</label>
+      <input id="scrapeNum" type="number" min="1" max="10000" value="200">
+      <div style="margin-top:10px">
+        <button id="scrapeBtn">▶ Bắt đầu cào</button>
+        <div class="row" style="margin-top:6px">
+          <button id="stopScrapeBtn" style="background:#e4e6eb;color:#050505">⏹ Dừng</button>
+          <button id="resetScrapeBtn" style="background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6">↺ Reset</button>
+        </div>
+      </div>
+      <div id="downloadGroup" class="hidden" style="margin-top:10px;border-top:1px solid #e4e6eb;padding-top:10px">
+        <label>Chọn định dạng để tải (cào xong mới hiện)</label>
+        <div class="row">
+          <button id="dlMd" style="background:#1877F2;color:#fff">⬇ Markdown</button>
+          <button id="dlJson" style="background:#ff9800;color:#fff">⬇ JSON</button>
+          <button id="dlTxt" style="background:#607d8b;color:#fff">⬇ TXT</button>
+        </div>
+        <p class="hint">Bấm 1 trong 3 nút để tải, có thể tải cả 3 lần với cùng dữ liệu.</p>
+      </div>
+      <p class="hint" style="margin-top:8px">Tự scroll + bóc text/link/ảnh. Chạy độc lập, không ảnh hưởng tab Kết bạn. Bấm Reset sau khi xuất file để cào tiếp năm khác cho sạch.</p>
+      <div class="warn">Chỉ cào bài công khai bạn có quyền xem. Tôn trọng ToS Facebook.</div>
+    </div>
+  </div>
+
+  <!-- TAB 3: NHÓM (GỒM TẤT CẢ TÍNH NĂNG NHÓM) -->
+  <div id="panelGroup" class="hidden">
+    <!-- 1. ĐĂNG BÀI AI LÊN NHÓM -->
+    <div class="card">
+      <h3 style="margin:0 0 6px;font-size:13px;color:#e65100">📝 Đăng bài AI lên nhóm đã tham gia</h3>
+      <div class="count" id="groupPostCount">0 / 0</div>
+      <div class="status" id="groupPostStatus">Tải danh sách và chọn nhóm cần đăng</div>
+      <div class="row" style="margin-top:7px">
+        <button id="loadPostGroupsBtn" style="background:#fff3e0;color:#e65100">🔄 Tải danh sách nhóm</button>
+        <button id="selectAllPostGroupsBtn" style="background:#e4e6eb;color:#050505">☑ Chọn tất cả</button>
+      </div>
+      <label>Lọc theo tên nhóm</label>
+      <input id="groupPostKeyword" type="text" placeholder="VD: AI, chứng khoán, máy tính">
+      <div id="groupPostList" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-height:220px;overflow:auto;border:1px solid #ccd0d5;border-radius:7px;margin-top:7px;padding:5px">
+        <div class="hint" style="padding:6px">Chưa có danh sách nhóm</div>
+      </div>
+      <label>AI Provider dùng chung cho mọi tính năng AI</label>
+      <select id="groupPostAiProvider">
+        <option value="gemini">Gemini (Google)</option><option value="openai">OpenAI</option>
+        <option value="claude">Claude</option><option value="groq">Groq</option>
+        <option value="openrouter">OpenRouter</option><option value="deepseek">DeepSeek</option>
+        <option value="mistral">Mistral</option><option value="custom">Custom</option>
+      </select>
+      <label>API Key dùng chung</label>
+      <input id="groupPostAiKey" type="password" placeholder="Nhập API Key">
+      <label>Chọn Model</label>
+      <select id="groupPostAiModel"></select>
+      <input id="groupPostAiCustomModel" class="hidden" type="text" placeholder="Nhập tên model tùy chỉnh" style="margin-top:5px">
+      <label>Custom URL (nếu chọn Custom)</label>
+      <input id="groupPostAiUrl" type="text" placeholder="https://api.xxx.com/v1/chat/completions">
+      <button id="groupPostAiTestBtn" style="margin-top:6px;background:#fff3e0;color:#e65100;border:1px solid #ffcc80">🧪 Lưu và Test API đăng nhóm</button>
+      <label>Prompt tạo bài — bắt buộc có {groupName}</label>
+      <textarea id="groupPostPrompt" rows="5">Dựa vào tên nhóm "{groupName}", hãy viết một nội dung thảo luận tự nhiên bằng tiếng Việt, phù hợp với chủ đề nhóm. Chỉ viết 1 đoạn gồm 1-2 câu, có một câu hỏi ngắn để thành viên dễ phản hồi. Không bịa thông tin, không quảng cáo, không hashtag, không đường dẫn, không emoji, không Markdown, không nhãn Hỏi/Đáp và chỉ trả về nội dung bài đăng.</textarea>
+      <label style="display:flex;align-items:center;gap:7px;margin-top:9px"><input id="groupPostBackgroundEnabled" type="checkbox" checked style="width:auto"> Đăng kèm nền màu (nhóm không hỗ trợ sẽ tự bỏ qua)</label>
+      <div id="groupPostBackgroundOptions" style="background:#f7f8fa;border:1px solid #ccd0d5;border-radius:8px;padding:8px;margin-top:5px">
+        <div class="row">
+          <div><label>Chế độ chọn nền</label><select id="groupPostBackgroundMode"><option value="random">🎲 Random trong các màu đã tích</option><option value="fixed">📌 Cố định một màu</option></select></div>
+          <div id="groupPostFixedColorWrap" class="hidden"><label>Màu cố định</label><select id="groupPostFixedColor"><option value="pink">Hồng</option><option value="green">Xanh lá</option><option value="red">Đỏ</option><option value="orange">Cam</option><option value="yellow">Vàng</option><option value="blue">Xanh dương</option><option value="purple">Tím</option><option value="burgundy">Đỏ thẫm</option><option value="beige">Be</option><option value="brown">Nâu</option><option value="gray">Xám</option><option value="black">Đen</option></select></div>
+        </div>
+        <div class="hint" style="margin:6px 0 5px">Bảng màu nền trơn — tích các màu được phép dùng khi Random</div>
+        <div id="groupPostBackgroundColors" style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:5px">
+          <label title="Hồng" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#e91e63;color:#fff"><input class="group-post-bg-color" type="checkbox" value="pink" checked style="width:auto">Hồng</label>
+          <label title="Xanh lá" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#2e7d32;color:#fff"><input class="group-post-bg-color" type="checkbox" value="green" checked style="width:auto">Xanh</label>
+          <label title="Đỏ" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#d32f2f;color:#fff"><input class="group-post-bg-color" type="checkbox" value="red" checked style="width:auto">Đỏ</label>
+          <label title="Cam" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#ef6c00;color:#fff"><input class="group-post-bg-color" type="checkbox" value="orange" checked style="width:auto">Cam</label>
+          <label title="Vàng" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#f9a825;color:#111"><input class="group-post-bg-color" type="checkbox" value="yellow" checked style="width:auto">Vàng</label>
+          <label title="Xanh dương" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#1976d2;color:#fff"><input class="group-post-bg-color" type="checkbox" value="blue" checked style="width:auto">Dương</label>
+          <label title="Tím" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#7b1fa2;color:#fff"><input class="group-post-bg-color" type="checkbox" value="purple" checked style="width:auto">Tím</label>
+          <label title="Đỏ thẫm" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#8e244d;color:#fff"><input class="group-post-bg-color" type="checkbox" value="burgundy" checked style="width:auto">Thẫm</label>
+          <label title="Màu be" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#b9a07e;color:#111"><input class="group-post-bg-color" type="checkbox" value="beige" checked style="width:auto">Be</label>
+          <label title="Nâu" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#6d4c41;color:#fff"><input class="group-post-bg-color" type="checkbox" value="brown" checked style="width:auto">Nâu</label>
+          <label title="Xám" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#78909c;color:#fff"><input class="group-post-bg-color" type="checkbox" value="gray" checked style="width:auto">Xám</label>
+          <label title="Đen" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#263238;color:#fff"><input class="group-post-bg-color" type="checkbox" value="black" checked style="width:auto">Đen</label>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <div><label>Tối đa ký tự</label><input id="groupPostMaxChars" type="number" min="40" max="140" value="100"></div>
+          <div class="hint" style="align-self:end;margin:0">Nếu nhóm không có bảng màu, tiện ích tự bỏ qua.</div>
+        </div>
+      </div>
+      <button id="groupPostPreviewBtn" style="margin-top:6px;background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7">👁 Tạo thử nội dung + màu (không đăng)</button>
+      <div id="groupPostPreview" class="hidden" style="margin-top:6px;border-radius:10px;padding:14px;color:#fff;font-size:17px;font-weight:700;text-align:center;white-space:pre-wrap;word-break:break-word"></div>
+      <p class="hint">Thời gian chờ giữa các nhóm, tải composer, mở bảng màu, gõ nội dung và bấm Đăng được tự động điều chỉnh để Facebook kịp tải.</p>
+      <button id="groupPostStartBtn" style="background:#e65100;color:#fff">▶ Tạo và đăng bài lên nhóm đã chọn</button>
+      <button id="groupPostStopBtn" style="background:#e4e6eb;color:#050505;margin-top:6px">⏹ Dừng đăng nhóm</button>
+    </div>
+
+    <!-- 2. TƯƠNG TÁC NHÓM ĐÃ THAM GIA -->
+    <div class="card">
+      <h3 style="margin:0 0 6px;font-size:13px;color:#00897b">💬 Tương tác nhóm đã tham gia</h3>
+      <div class="count" id="groupInteractCount">0 / 0</div>
+      <div class="status" id="groupInteractStatus">Tải danh sách rồi tích chọn các nhóm</div>
+      <div class="row" style="margin-top:7px">
+        <button id="loadJoinedGroupsBtn" style="background:#e0f2f1;color:#00695c">🔄 Tải danh sách nhóm</button>
+        <button id="selectAllGroupsBtn" style="background:#e4e6eb;color:#050505">☑ Chọn tất cả</button>
+      </div>
+      <label>Từ khóa tên nhóm (có thể nhập nhiều từ, cách nhau bằng dấu phẩy)</label>
+      <div class="row">
+        <input id="groupInteractKeyword" type="text" placeholder="VD: AI, marketing, bất động sản">
+        <button id="selectKeywordGroupsBtn" style="background:#fff3e0;color:#e65100">🔎 Chọn theo từ khóa</button>
+      </div>
+      <div id="joinedGroupList" style="max-height:210px;overflow:auto;border:1px solid #ccd0d5;border-radius:7px;margin-top:7px;padding:5px">
+        <div class="hint" style="padding:6px">Chưa có danh sách nhóm</div>
+      </div>
+      <label>Biểu tượng cảm xúc</label>
+      <select id="groupInteractReaction">
+        <option value="like">👍 Like (Thích)</option>
+        <option value="love">❤️ Tym</option>
+        <option value="haha">😆 Haha</option>
+        <option value="wow">😮 Wow</option>
+        <option value="sad">😢 Buồn</option>
+        <option value="angry">😡 Phẫn nộ</option>
+        <option value="random" selected>🎲 Ngẫu nhiên (random)</option>
+      </select>
+      <div class="row">
+        <div><label>Số bài mỗi nhóm</label><input id="groupInteractTarget" type="number" min="1" max="100" value="5"></div>
+        <div><label>Giãn cách (giây)</label><div class="row"><input id="groupInteractMinDelay" type="number" min="1" value="5"><input id="groupInteractMaxDelay" type="number" min="1" value="12"></div></div>
+      </div>
+      <p class="hint">Chương trình lần lượt mở từng nhóm đã tích, tương tác đúng số bài rồi chuyển sang nhóm tiếp theo.</p>
+      <button id="groupInteractStartBtn" style="background:#00897b;color:#fff">▶ Bắt đầu tương tác nhóm</button>
+      <button id="groupInteractStopBtn" style="background:#e4e6eb;color:#050505;margin-top:6px">⏹ Dừng</button>
+    </div>
+
+    <!-- 3. TÌM & THAM GIA NHÓM -->
+    <div class="card full-width">
+      <h3 style="margin:0 0 6px;font-size:13px;color:#1877F2">➕ Tìm & Tham gia nhóm mới</h3>
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <button id="subTabSearch" style="flex:1;padding:6px;border:none;border-radius:6px;font-weight:700;font-size:12px;background:#1877F2;color:#fff">🔍 Theo từ khoá</button>
+        <button id="subTabDiscover" style="flex:1;padding:6px;border:none;border-radius:6px;font-weight:700;font-size:12px;background:#e4e6eb;color:#050505">🧭 Theo Khám phá</button>
+      </div>
+      <!-- SEARCH MODE -->
+      <div id="groupSearchPanel">
+        <div class="count" id="groupCount">0 / 0</div>
+        <div class="status" id="groupStatus">Nhập từ khoá để tìm nhóm</div>
+        <label>Từ khoá tìm nhóm</label>
+        <input id="groupKeyword" type="text" placeholder="vd: chứng khoán, bất động sản, marketing">
+        <div class="row">
+          <div><label>Thành viên tối thiểu</label><input id="groupMinMembers" type="number" min="0" value="10000"></div>
+          <div><label>Bài/ngày tối thiểu</label><input id="groupMinPosts" type="number" min="0" value="5"></div>
+        </div>
+        <div class="row">
+          <div><label>Số nhóm muốn tham gia</label><input id="groupTarget" type="number" min="1" max="50" value="10"></div>
+          <div><label>Delay (giây)</label>
+            <div class="row"><input id="groupMinDelay" type="number" min="1" value="5"><input id="groupMaxDelay" type="number" min="1" value="15"></div>
+          </div>
+        </div>
+        <label>Câu trả lời tự động khi nhóm hỏi (mỗi dòng 1 câu)</label>
+        <textarea id="groupAnswers" rows="3" style="width:100%;padding:7px 8px;border:1px solid #ccd0d5;border-radius:6px;font-size:12px;resize:vertical">Tôi đồng ý với quy tắc nhóm
+Tôi muốn học hỏi và đóng góp tích cực
+Có, tôi sẽ tuân thủ nội quy</textarea>
+        <label style="display:flex;align-items:center;gap:7px"><input id="groupAiAnswersEnabled" type="checkbox" checked style="width:auto"> Dùng AI đọc và trả lời câu hỏi tham gia</label>
+        <label>Prompt AI trả lời — dùng {groupName} và {questions}</label>
+        <textarea id="groupAiAnswersPrompt" rows="3">Bạn đang xin tham gia nhóm "{groupName}". Hãy trả lời trung thực, lịch sự và ngắn gọn từng câu hỏi sau bằng tiếng Việt. Không bịa thông tin cá nhân hoặc kinh nghiệm không được cung cấp. Trả về đúng một mảng JSON các câu trả lời theo đúng thứ tự câu hỏi: {questions}</textarea>
+        <p class="hint">Dùng API đã cấu hình ở phần Đăng bài AI lên nhóm. Nếu AI lỗi sẽ dùng các câu trả lời mẫu phía trên.</p>
+        <div style="margin-top:10px">
+          <button id="groupStartBtn" style="background:#1877F2;color:#fff">▶ Tìm & Tham gia (từ khoá)</button>
+          <div class="row" style="margin-top:6px">
+            <button id="groupStopBtn" style="background:#e4e6eb;color:#050505">⏹ Dừng</button>
+            <button id="groupResetBtn" style="background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6">↺ Reset</button>
+          </div>
+        </div>
+        <p class="hint" style="margin-top:8px">Tự mở <code>facebook.com/search/groups/?q=keyword</code>, lọc nhóm lớn + nhiều bài hằng ngày rồi tham gia.</p>
+      </div>
+      <!-- DISCOVER MODE -->
+      <div id="groupDiscoverPanel" class="hidden">
+        <div class="count" id="discoverCount">0 / 0</div>
+        <div class="status" id="discoverStatus">Mở trang Khám phá để tham gia nhóm gợi ý</div>
+        <label>Số lượng nhóm muốn tham gia (Gợi ý khác)</label>
+        <input id="discoverTarget" type="number" min="1" max="50" value="10">
+        <div class="row">
+          <div><label>Delay min (giây)</label><input id="discoverMinDelay" type="number" min="1" value="5"></div>
+          <div><label>Delay max (giây)</label><input id="discoverMaxDelay" type="number" min="1" value="15"></div>
+        </div>
+        <label>Câu trả lời tự động (mỗi dòng 1 câu)</label>
+        <textarea id="discoverAnswers" rows="3" style="width:100%;padding:7px 8px;border:1px solid #ccd0d5;border-radius:6px;font-size:12px;resize:vertical">Tôi đồng ý với quy tắc nhóm
+Tôi muốn học hỏi và đóng góp tích cực
+Có, tôi sẽ tuân thủ nội quy</textarea>
+        <div style="margin-top:10px">
+          <button id="discoverStartBtn" style="background:#009688;color:#fff">🧭 Tham gia theo Khám phá</button>
+          <div class="row" style="margin-top:6px">
+            <button id="discoverStopBtn" style="background:#e4e6eb;color:#050505">⏹ Dừng</button>
+            <button id="discoverResetBtn" style="background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6">↺ Reset</button>
+          </div>
+        </div>
+        <p class="hint" style="margin-top:8px">Tự vào <code>facebook.com/groups/discover</code>, cuộn mục <b>Gợi ý khác</b> như ảnh bạn gửi, bấm <b>Tham gia nhóm</b> từng card với delay ngẫu nhiên + tự trả lời câu hỏi.</p>
+      </div>
+      <div class="warn" style="margin-top:8px">Tham gia nhanh quá dễ bị hạn chế. Khuyên 5-15s, tối đa 10-20 nhóm/ngày.</div>
+    </div>
+  </div>
+
+  <!-- TAB 4: BẢN TIN & AI -->
+  <div id="panelFeed" class="hidden">
+    <!-- 1. TƯƠNG TÁC BẢN TIN -->
+    <div class="card">
+      <h3 style="margin:0 0 6px;font-size:13px;color:#1877F2">1️⃣ Tương tác bản tin</h3>
+      <div class="count" id="feedCount">0 / 0</div>
+      <div class="status" id="feedStatus">Mở facebook.com (bản tin) để tương tác</div>
+      <label>Loại cảm xúc</label>
+      <select id="feedReaction">
+        <option value="like">👍 Like (Thích)</option>
+        <option value="love">❤️ Tym</option>
+        <option value="haha">😆 Haha</option>
+        <option value="wow">😮 Wow</option>
+        <option value="sad">😢 Buồn</option>
+        <option value="angry">😡 Phẫn nộ</option>
+        <option value="random">🎲 Ngẫu nhiên (random)</option>
+      </select>
+      <div class="row">
+        <div><label>Số lượng muốn tương tác</label><input id="feedTarget" type="number" min="1" max="100" value="20"></div>
+        <div><label>Delay</label><div class="row"><input id="feedMinDelay" type="number" min="1" value="3"><input id="feedMaxDelay" type="number" min="1" value="8"></div></div>
+      </div>
+      <p class="hint">Chọn random sẽ quay ngẫu nhiên Like/Tym/Haha... mỗi bài. Delay random Min-Max giây.</p>
+      <div style="margin-top:8px">
+        <button id="feedStartBtn" style="background:#1877F2;color:#fff">▶ Bắt đầu tương tác bản tin</button>
+        <button id="feedScanBtn" style="background:#e4e6eb;color:#050505;margin-top:6px">🔍 Quét thử (chỉ highlight, không like)</button>
+        <div class="row" style="margin-top:6px">
+          <button id="feedStopBtn" style="background:#e4e6eb;color:#050505">⏹ Dừng</button>
+          <button id="feedResetBtn" style="background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6">↺ Reset</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. COMMENT BẰNG AI -->
+    <div class="card">
+      <h3 style="margin:0 0 6px;font-size:13px;color:#9c27b0">2️⃣ Comment bằng AI</h3>
+      <div class="count" id="aiCount">0 / 0</div>
+      <div class="status" id="aiStatus">Cấu hình API bên dưới rồi bấm Bắt đầu</div>
+      <label>Chọn AI Provider</label>
+      <select id="aiProvider">
+        <option value="openai">OpenAI (api.openai.com)</option>
+        <option value="gemini">Gemini (Google)</option>
+        <option value="claude">Claude (Anthropic)</option>
+        <option value="groq">Groq (llama)</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="deepseek">DeepSeek</option>
+        <option value="mistral">Mistral</option>
+        <option value="custom">Custom (OpenAI-compatible)</option>
+      </select>
+      <div id="aiDesc" class="hint" style="background:#f3e5f5;padding:6px;border-radius:6px;margin-top:4px">Nhập API Key cho provider đã chọn. Xem mô tả bên dưới.</div>
+      <label>API Key</label>
+      <input id="aiApiKey" type="password" placeholder="sk-... hoặc AIza...">
+      <p class="hint">Nhập một lần — cấu hình này được lưu và dùng chung cho tất cả tính năng AI.</p>
+      <div class="row">
+        <div><label>Chọn Model</label><select id="aiModel"></select><input id="aiCustomModel" class="hidden" type="text" placeholder="Nhập tên model tùy chỉnh" style="margin-top:5px"></div>
+        <div><label>Custom URL (nếu chọn Custom)</label><input id="aiCustomUrl" type="text" placeholder="https://api.xxx.com/v1/chat/completions"></div>
+      </div>
+      <button id="aiTestBtn" style="margin-top:6px;background:#f3e5f5;color:#7b1fa2;border:1px solid #ce93d8">🧪 Lưu và Test API comment</button>
+      <label>Prompt (dùng {postText} làm biến nội dung bài)</label>
+      <textarea id="aiPrompt" rows="3" style="width:100%;padding:7px 8px;border:1px solid #ccd0d5;border-radius:6px;font-size:12px;resize:vertical">Viết một bình luận ngắn gọn, tự nhiên bằng tiếng Việt, phù hợp với nội dung bài viết sau (1-2 câu, thân thiện): "{postText}"</textarea>
+      <div class="row">
+        <div><label>Số bài muốn AI comment</label><input id="aiTarget" type="number" min="1" max="50" value="10"></div>
+        <div><label>Delay</label><div class="row"><input id="aiMinDelay" type="number" min="1" value="10"><input id="aiMaxDelay" type="number" min="1" value="20"></div></div>
+      </div>
+      <div class="row">
+        <div><label>Chế độ tiết kiệm</label><select id="aiEconomyMode"><option value="balanced" selected>⚖️ Cân bằng — AI theo lô</option><option value="max">💰 Tiết kiệm tối đa — ưu tiên mẫu</option><option value="personal">✨ Cá nhân hóa — từng bài</option></select></div>
+        <div><label>Số bài mỗi request</label><input id="aiBatchSize" type="number" min="2" max="10" value="5"></div>
+        <div><label>Cache (ngày)</label><input id="aiCacheDays" type="number" min="0" max="30" value="7"></div>
+      </div>
+      <p class="hint">Chế độ Cân bằng gom 5 bài/request, chỉ gửi tối đa 500 ký tự mỗi bài và dùng lại comment đã tạo trong cache.</p>
+      <div style="margin-top:8px">
+        <button id="aiStartBtn" style="background:#9c27b0;color:#fff">🤖 Bắt đầu AI comment</button>
+        <div class="row" style="margin-top:6px">
+          <button id="aiStopBtn" style="background:#e4e6eb;color:#050505">⏹ Dừng</button>
+          <button id="aiResetBtn" style="background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6">↺ Reset</button>
+        </div>
+      </div>
+      <div class="warn" style="margin-top:8px">Mỗi Provider cần API Key riêng: OpenAI lấy ở platform.openai.com/api-keys, Gemini ở aistudio.google.com/app/apikey, Claude ở console.anthropic.com, Groq ở console.groq.com, OpenRouter ở openrouter.ai/keys. Có thể lưu nhiều key cùng lúc (mỗi provider 1 key).</div>
+    </div>
+  </div>
+
+<script src="popup.js"></script>
+</body>
+</html>

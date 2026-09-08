@@ -1,0 +1,27 @@
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs and local tooling state
+*.log
+coverage/
+dist/
+build/
+node_modules/
+tmp/
+output/
+
+# OS/editor metadata
+.idea/
+.vscode/
+*.swp
+*.swo
