@@ -1,5 +1,5 @@
 // background.js - xu ly goi da API AI de tao comment
-try { importScripts("i18n.js"); } catch (_) { }
+try { importScripts("i18n.js", "pageStore.js"); } catch (_) { }
 const AI_DEFAULTS = {
   openai: { url: "https://api.openai.com/v1/chat/completions", model: "gpt-4o-mini" },
   gemini: { url: "https://generativelanguage.googleapis.com/v1beta/interactions", model: "gemini-flash-lite-latest" },
@@ -277,7 +277,88 @@ function normalizeSalesMedia(value){
   return raw.filter(item=>item&&typeof item==="object"&&item.dataUrl&&/^(image|video)\//i.test(String(item.type||"")));
 }
 
+async function getPageAiConfig(own={}){
+  const cfg=await chrome.storage.sync.get(["aiProvider","aiApiKey","aiModel","aiCustomUrl","aiKeys"]);
+  const provider=own.provider||cfg.aiProvider||"gemini",saved=cfg.aiKeys?.[provider]||{};
+  return {
+    provider,
+    key:normalizeApiKey(own.key||saved.key||(provider===cfg.aiProvider?cfg.aiApiKey:"")||""),
+    model:own.model||saved.model||(provider===cfg.aiProvider?cfg.aiModel:"")||AI_DEFAULTS[provider]?.model||"",
+    url:own.url||saved.url||(provider===cfg.aiProvider?cfg.aiCustomUrl:"")||""
+  };
+}
+function pageProfilePromptContext(profile){
+  if(!profile||typeof profile!=="object")return "";
+  const compact={name:profile.name||"",niche:profile.niche||profile.topic||"",products:profile.products||profile.offer||"",tone:profile.tone||profile.style||"",rules:profile.rules||profile.doNotInvent||""};
+  return `HỒ SƠ PAGE: ${JSON.stringify(compact)}`;
+}
+function cleanPageGroupPost(raw){
+  let text=String(raw||"").replace(/```[a-z]*|```/gi," ").replace(/\*\*/g,"").split(/\r?\n/).map(s=>s.trim()).filter(Boolean).join(" ");
+  text=text.replace(/^(?:bài đăng|nội dung|gợi ý|post|content)\s*:\s*/i,"").replace(/^['"“”]+|['"“”]+$/g,"").replace(/https?:\/\/\S+/gi," ").replace(/(^|\s)#[\p{L}\p{N}_-]+/gu," ").replace(/\s+/g," ").trim();
+  return sanitizePostedText(sliceByCodePoints(text,1800));
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse)=>{
+  if(msg.action==="pageStore"){
+    (async()=>{
+      try{
+        if(!globalThis.PageStore)throw new Error("Page Care database unavailable");
+        const op=String(msg.op||"list"),store=String(msg.store||"");
+        if(op==="put")sendResponse({ok:true,value:await PageStore.put(store,msg.value||{})});
+        else if(op==="get")sendResponse({ok:true,value:await PageStore.get(store,msg.id)});
+        else if(op==="list")sendResponse({ok:true,values:await PageStore.list(store,msg.limit)});
+        else if(op==="remove")sendResponse({ok:true,value:await PageStore.remove(store,msg.id)});
+        else if(op==="clear")sendResponse({ok:true,value:await PageStore.clear(store)});
+        else throw new Error("Unknown Page Care database operation");
+      }catch(error){sendResponse({ok:false,error:String(error?.message||error)});}
+    })();
+    return true;
+  }
+  if(msg.action==="aiGeneratePageGroupPost"){
+    (async()=>{
+      try{
+        const ai=await getPageAiConfig(msg.aiConfig||{});
+        if(!ai.key)throw new Error(t("bg.noKeyProv",{provider:ai.provider}));
+        if(!ai.model)throw new Error(t("bg.noModelProv",{provider:ai.provider}));
+        if(ai.provider==="custom"&&!ai.url)throw new Error(t("bg.noCustomUrlAi"));
+        const groupName=String(msg.groupName||"").trim().slice(0,180),pageName=String(msg.pageName||"").trim().slice(0,180);
+        const recent=(Array.isArray(msg.recentPosts)?msg.recentPosts:[]).map((text,i)=>`${i+1}. ${String(text||"").replace(/\s+/g," ").trim().slice(0,900)}`).filter(Boolean).slice(0,8).join("\n");
+        const template=String(msg.prompt||t("pgp.promptDefault"))
+          .replaceAll("{groupName}",groupName).replaceAll("{pageName}",pageName).replaceAll("{recentPosts}",recent||t("pgp.noRecent"));
+        const prompt=[template,pageProfilePromptContext(msg.pageProfile),"YÊU CẦU: Chỉ trả về duy nhất nội dung bài đăng. Viết tự nhiên, tạo thảo luận đúng chủ đề nhóm, không bịa số liệu, không sao chép nguyên văn bài khác, không hashtag, không URL, không giải thích của AI."].filter(Boolean).join("\n\n");
+        let raw="";
+        if(ai.provider==="gemini")raw=await callGemini(ai.key,ai.model,"",prompt,false);
+        else if(ai.provider==="claude"||ai.provider==="Muse")raw=await callClaude(ai.key,ai.model,"",prompt,false);
+        else{const def=AI_DEFAULTS[ai.provider]||AI_DEFAULTS.openai;raw=await callOpenAICompatible(ai.key,ai.url||def.url,ai.model||def.model,"",prompt,false);}
+        const content=cleanPageGroupPost(raw);
+        if(!content)throw new Error(t("bg.contentEmpty"));
+        sendResponse({ok:true,content,provider:ai.provider,model:ai.model});
+      }catch(error){sendResponse({ok:false,error:friendlyAiError(error,msg.aiConfig?.provider||"AI")});}
+    })();
+    return true;
+  }
+  if(msg.action==="aiGeneratePageComment"){
+    (async()=>{
+      try{
+        const ai=await getPageAiConfig(msg.aiConfig||{});
+        if(!ai.key)throw new Error(t("bg.noKeyProv",{provider:ai.provider}));
+        if(!ai.model)throw new Error(t("bg.noModelProv",{provider:ai.provider}));
+        if(ai.provider==="custom"&&!ai.url)throw new Error(t("bg.noCustomUrlAi"));
+        const postText=String(msg.postText||"").replace(/\s+/g," ").trim().slice(0,2200),pageName=String(msg.pageName||"").trim().slice(0,180);
+        if(postText.length<10)throw new Error(t("bg.postTooShort"));
+        const template=String(msg.prompt||t("pgc.promptDefault")).replaceAll("{postText}",postText).replaceAll("{pageName}",pageName).replaceAll("{source}",String(msg.source||"Bản tin"));
+        const prompt=[template,pageProfilePromptContext(msg.pageProfile)].filter(Boolean).join("\n\n");
+        let raw="";
+        if(ai.provider==="gemini")raw=await callGemini(ai.key,ai.model,postText,prompt,true);
+        else if(ai.provider==="claude"||ai.provider==="Muse")raw=await callClaude(ai.key,ai.model,postText,prompt,true);
+        else{const def=AI_DEFAULTS[ai.provider]||AI_DEFAULTS.openai;raw=await callOpenAICompatible(ai.key,ai.url||def.url,ai.model||def.model,postText,prompt,true);}
+        const comment=cleanGeneratedComment(raw);
+        if(!comment)throw new Error(t("bg.aiEmpty"));
+        sendResponse({ok:true,comment,provider:ai.provider,model:ai.model});
+      }catch(error){sendResponse({ok:false,error:friendlyAiError(error,msg.aiConfig?.provider||"AI")});}
+    })();
+    return true;
+  }
   if(msg.action==="getSenderTabId"){
     sendResponse({tabId:sender.tab?.id||null});
     return true;

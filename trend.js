@@ -2,9 +2,9 @@
 // State machine riêng, không dùng chung scrape*/sales*/share* (theo AGENTS.md).
 (function(){
   "use strict";
-  if(window.__fbTrendV1940)return;
-  window.__fbTrendV1940=true;
-  console.log("[Trend] loaded v1.9.40");
+  if(window.__fbTrendV1942)return;
+  window.__fbTrendV1942=true;
+  console.log("[Trend] loaded v1.9.42");
 
   const sleep=ms=>new Promise(r=>setTimeout(r,ms));
   const clean=v=>String(v||"").replace(/[ -­⁠⁡⁢⁣﻿]/g," ").replace(/\s+/g," ").trim();
@@ -116,7 +116,10 @@
     return false;
   }
   function trendParseArticle(el,group){
-    if(!el||el.dataset.trendLearned==="1")return null;
+    // Không dùng data-trend-learned làm điều kiện bỏ qua. Facebook có thể
+    // tái sử dụng cùng một node DOM cho bài mới khi cuộn sâu; seen ở vòng
+    // chạy sẽ chống trùng theo id/nội dung mà không làm rơi bài mới.
+    if(!el)return null;
     if(trendIsSponsored(el))return null;
     const inComment=n=>{const a=n.closest('div[role="article"]');return !!a&&a!==el;};
     let text="";
@@ -270,32 +273,44 @@
   }
 
   async function learnOneGroup(group,perGroup,seen,onRound){
-    let got=[],scanned=0,totalInMain=0;
-    // cuộn + mở rộng vài nhịp để lấy bài mới nhất đang hiển thị
-    for(let round=0;round<8&&got.length<perGroup;round++){
+    let got=[],scanned=0,totalInMain=0,round=0,stallRounds=0;
+    const unlimited=!Number.isFinite(perGroup),finiteRounds=8,endStallRounds=3;
+    // Với chế độ không giới hạn, không dùng số vòng cố định: tiếp tục cuộn
+    // đến khi Facebook không tải thêm bài mới trong vài vòng liên tiếp. Chế
+    // độ hữu hạn cũ vẫn giữ tối đa 8 vòng để người dùng chủ động giới hạn.
+    while(await learnActive()){
+      if(!unlimited&&(got.length>=perGroup||round>=finiteRounds))break;
+      round++;
+      const beforeGot=got.length,beforeCandidates=countMainArticles(),beforeHeight=Math.max(document.documentElement?.scrollHeight||0,document.body?.scrollHeight||0);
       if(!await learnActive())return {got,scanned,totalInMain};
       trendExpandSeeMore();
       await sleep(900);
       if(!await learnActive())return {got,scanned,totalInMain};
       totalInMain=countMainArticles();
       const candidates=trendPostCandidates()
-        .filter(el=>el.dataset.trendLearned!=="1"&&trendText(el).length>0)
+        .filter(el=>trendText(el).length>0)
         // Prefer Facebook's useful inner post article over its empty wrapper.
         .sort((a,b)=>b.querySelectorAll('div[role="article"]').length-a.querySelectorAll('div[role="article"]').length);
       scanned+=candidates.length;
       for(const el of candidates){
-        if(got.length>=perGroup)break;
+        if(!unlimited&&got.length>=perGroup)break;
         const d=trendParseArticle(el,group);
-        el.dataset.trendLearned="1";
         if(!d)continue;
+        // Giữ marker để chẩn đoán/debug, nhưng không dùng marker này để
+        // loại node ở vòng sau vì Facebook có thể tái sử dụng node đó.
+        el.dataset.trendLearned="1";
         if(seen.has(d.id))continue;
         seen.add(d.id);
         got.push(d);
       }
-      try{if(onRound)await onRound({round:round+1,rounds:8,got:got.length,scanned,totalInMain,items:got.slice()});}catch{}
-      if(got.length>=perGroup)break;
+      const roundGot=got.length-beforeGot;
+      try{if(onRound)await onRound({round,rounds:finiteRounds,unlimited,got:got.length,scanned,totalInMain,items:got.slice()});}catch{}
+      if(!unlimited&&got.length>=perGroup)break;
       window.scrollTo(0,document.body.scrollHeight);
       if(!await waitWhileActive(1800,learnActive))return {got,scanned,totalInMain};
+      const afterCandidates=countMainArticles(),afterHeight=Math.max(document.documentElement?.scrollHeight||0,document.body?.scrollHeight||0);
+      if(roundGot===0&&afterCandidates<=beforeCandidates&&afterHeight<=beforeHeight)stallRounds++;else stallRounds=0;
+      if(unlimited&&stallRounds>=endStallRounds)break;
     }
     return {got,scanned,totalInMain};
   }
@@ -311,7 +326,9 @@
       let index=Number(s.trendLearnIndex)||0;
       let all=Array.isArray(s.trendLearnPosts)?s.trendLearnPosts:[];
       const seen=new Set(all.map(p=>String(p?.id||"")));
-      const perGroup=Math.max(1,Math.min(30,Number(cfg.perGroup)||10));
+      const unlimited=cfg.unlimited===true||Number(cfg.perGroup)<=0;
+      const perGroup=unlimited?Infinity:Math.max(1,Number(cfg.perGroup)||10);
+      const learnTarget=unlimited?"không giới hạn số bài":`${perGroup} bài`;
       while(index<cfg.groups.length){
         if(!await learnActive())return;
         let group=cfg.groups[index];
@@ -328,7 +345,7 @@
           await waitWhileActive(2500,learnActive);
           if(!await learnActive())return;
         }
-        await learnStatus(`Đang học nhóm ${index+1}/${cfg.groups.length}: ${group.name} — mục tiêu ${perGroup} bài (đã lưu ${all.length})`);
+        await learnStatus(`Đang học nhóm ${index+1}/${cfg.groups.length}: ${group.name} — mục tiêu ${learnTarget} (đã lưu ${all.length})`);
         await waitWhileActive(2000,learnActive);
         if(!await learnActive())return;
         // Chờ feed render thật; trang trắng (URL sắp xếp lỗi/chưa vào nhóm)
@@ -355,22 +372,23 @@
         const groupNo=index+1,groupTotal=cfg.groups.length;
         const res=await learnOneGroup(group,perGroup,seen,async p=>{
           // Lưu tạm từng vòng để popup hiện số bài tăng dần theo thời gian thực.
-          const preview=[...all,...(Array.isArray(p.items)?p.items:[])].slice(-300);
+          const preview=[...all,...(Array.isArray(p.items)?p.items:[])];
+          const progressTarget=p.unlimited?"không giới hạn":`${p.got}/${perGroup} bài`;
           await chrome.storage.local.set({
             trendLearnPosts:preview,
             trendLearnCount:preview.length,
-            trendLearnStatus:`Đang học nhóm ${groupNo}/${groupTotal}: ${group.name} — vòng ${p.round}/${p.rounds}, đã lấy ${p.got}/${perGroup} bài (quét ${p.scanned}/${p.totalInMain} ô, tổng lưu ${preview.length})`
+            trendLearnStatus:`Đang học nhóm ${groupNo}/${groupTotal}: ${group.name} — vòng ${p.rounds?`${p.round}/${p.rounds}`:p.round}, đã lấy ${progressTarget} (quét ${p.scanned}/${p.totalInMain} ô, tổng lưu ${preview.length})`
           });
         });
         const got=res.got,scanned=res.scanned,totalInMain=res.totalInMain;
-        all=[...all,...got].slice(-300);
+        all=[...all,...got];
         index++;
         const stash={trendLearnPosts:all,trendLearnCount:all.length,trendLearnIndex:index};
         if(!got.length){
           stash.trendLastDiag=await diagnosePage();
           stash.trendLearnStatus=`Nhóm ${groupNo}/${groupTotal}: ${group.name} — thấy ${totalInMain} ô bài nhưng quét ${scanned} ô không giữ được bài nào (bài quá ngắn/toàn ảnh?). Tổng lưu ${all.length}, sang nhóm tiếp theo.${diagSummary(stash.trendLastDiag)}`;
         }else{
-          stash.trendLearnStatus=`Đã học xong nhóm ${groupNo}/${groupTotal}: ${group.name} — lấy ${got.length}/${perGroup} bài (tổng lưu ${all.length})`;
+          stash.trendLearnStatus=`Đã học xong nhóm ${groupNo}/${groupTotal}: ${group.name} — lấy ${got.length}/${unlimited?"không giới hạn":perGroup} bài (tổng lưu ${all.length})`;
         }
         await chrome.storage.local.set(stash);
         if(index<cfg.groups.length&&await learnActive()){
@@ -387,7 +405,11 @@
         await chrome.storage.local.set({trendLearnActive:false,trendLearnIndex:index,trendLearnReady:all.length>0,trendLearnStatus:all.length?`Học xong ${all.length} bài từ ${cfg.groups.length} nhóm. Bấm "Viết lại bằng AI".`:"Không học được bài nào. Hãy mở nhóm bằng tay kiểm tra: đã tham gia nhóm chưa, nhóm có bài chữ (không phải toàn ảnh/video) không, rồi thử lại với nhóm công khai khác."});
       }
     }catch(e){
-      try{await learnStatus(`Lỗi học bài: ${e.message}`,{trendLearnActive:false});}catch{}
+      const message=String(e?.message||e||"");
+      const quota=/quota|storage|MAX_WRITE_OPERATIONS/i.test(message)
+        ?"Kho lưu trữ bài học đã đầy; đã dừng để bảo toàn các bài đã cào. Hãy xóa bài không cần rồi cào lại."
+        :`Lỗi học bài: ${message}`;
+      try{await learnStatus(quota,{trendLearnActive:false});}catch{}
     }finally{
       learnLoopActive=false;
       // Phiên mới tới trong lúc vòng cũ còn sống: vòng cũ thoát vì lệch
@@ -833,23 +855,37 @@
     await chrome.storage.local.set({trendPostStage:"anonymous-confirmed",trendPostSubmitIndex:index,trendPostAnonymousMode:"anonymous"});
     return true;
   }
+  function trendProofText(value){
+    return clean(String(value||"")
+      .replace(/[\u200B-\u200D\u2060\uFEFF]/g," "))
+      .toLocaleLowerCase("vi");
+  }
   function trendPostContentVisible(content){
-    const expected=clean(content).slice(0,80).toLocaleLowerCase("vi");
+    // Facebook can render a just-published anonymous post outside the first
+    // main/feed subtree, then recycle that subtree while the SPA settles.
+    // Search all visible post-like nodes and the visible page text, while
+    // excluding the composer dialog so draft text cannot prove a publish.
+    const expected=trendProofText(content).slice(0,80);
     if(expected.length<10)return false;
-    const main=document.querySelector('[role="main"]')||document.body;
-    const feed=main.querySelector('[role="feed"]');
-    const candidates=[...main.querySelectorAll('[role="article"],[data-pagelet^="FeedUnit_"],[data-ad-preview="message"]'),...(feed?[...feed.children]:[])];
-    return candidates.some(node=>{
+    const roots=[document.querySelector('[role="main"]'),document.body].filter(Boolean);
+    const candidates=[...new Set(roots.flatMap(root=>[
+      ...root.querySelectorAll('[role="article"],[data-pagelet^="FeedUnit_"],[data-ad-preview="message"],[role="feed"] > *')
+    ]))];
+    if(candidates.some(node=>{
       // A published article normally contains its own comment editor. Do not
       // discard the article just because that editor is present; only dialog
       // content is a composer and must be excluded from the proof scan.
       if(!visible(node)||node.closest('[role="dialog"]'))return false;
-      return clean(node.innerText||node.textContent).toLocaleLowerCase("vi").includes(expected);
-    });
+      return trendProofText(node.innerText||node.textContent).includes(expected);
+    }))return true;
+    const dialogHasExpected=[...document.querySelectorAll('[role="dialog"]')]
+      .some(dialog=>visible(dialog)&&trendProofText(dialog.innerText||dialog.textContent).includes(expected));
+    return !dialogHasExpected&&trendProofText(document.body?.innerText||"").includes(expected);
   }
   async function waitForTrendPostDisplayed(content,groupName,proof={}){
     const deadline=Date.now()+TREND_POST_AUTO.postVisibleWait,holdMs=TREND_POST_AUTO.afterPostMin*1000+Math.floor(Math.random()*(TREND_POST_AUTO.afterPostMax-TREND_POST_AUTO.afterPostMin+1))*1000;
     const started=Date.now();
+    let proofSeenAt=0;
     if(proof.pending){
       while(Date.now()-started<holdMs){
         if(!await postActive())return false;
@@ -864,7 +900,15 @@
       if(!await postActive())return false;
       const left=Math.max(1,Math.ceil((deadline-Date.now())/1000));
       await postStatus(t("trend2.waitVisible",{name:groupName,left}),{trendPostStage:"waiting-visible"});
-      if(trendPostContentVisible(content)&&Date.now()-started>=holdMs){await chrome.storage.local.set({trendPostStage:"post-visible"});return true;}
+      // A Facebook SPA may show the new article briefly and then recycle the
+      // feed node. One observed post is a stronger success signal than a
+      // later absence caused by virtualization; record the first observation
+      // and hold the group for the normal safety window before continuing.
+      if(!proofSeenAt&&trendPostContentVisible(content)){
+        proofSeenAt=Date.now();
+        await chrome.storage.local.set({trendPostStage:"post-proof-seen",trendPostProofSeenAt:proofSeenAt});
+      }
+      if(proofSeenAt&&Date.now()-proofSeenAt>=holdMs){await chrome.storage.local.set({trendPostStage:"post-visible"});return true;}
       await sleep(500);
     }
     const error=new Error(t("trend2.postNotVisible",{name:groupName}));error.postDisplayUnconfirmed=true;throw error;
@@ -1081,6 +1125,9 @@
   function trendJobGroup(cfg,job){
     return job?.group||cfg.groups?.[Number(job?.groupIndex)||0]||{};
   }
+  function trendJobTotalInGroup(cfg,job){
+    return Math.max(1,Number(job?.groupPostTotal)||Number(cfg?.postsPerGroup)||1);
+  }
   async function trendDraftForJob(cfg,job,index){
     let group=trendJobGroup(cfg,job),resolved=trendResolvedGroup(group);
     if(resolved!==group){
@@ -1092,7 +1139,7 @@
     if(resolved.manualLink&&!resolved.explicitName&&!resolved.groupNameResolved)draft="";
     if(!draft&&job.sourceText&&cfg.prompt){
       if(!await postActive())throw new Error("Đã dừng trước khi AI xử lý bài");
-      await postStatus(`AI đang xử lý bài ${Number(job.postIndex||0)+1}/${Math.max(1,Number(cfg.postsPerGroup)||1)} theo đúng tên nhóm: ${resolved.name}`);
+      await postStatus(`AI đang xử lý bài ${Number(job.postIndex||0)+1}/${trendJobTotalInGroup(cfg,job)} theo đúng tên nhóm: ${resolved.name}`);
       const result=await chrome.runtime.sendMessage({action:"aiRewriteTrend",sourceText:job.sourceText,groupName:resolved.name,prompt:cfg.prompt,styleProfileId:cfg.styleProfileId||"",variant:job.variant||index+1,background:normalizeTrendBackground(cfg.background)});
       if(!result?.ok)throw new Error(result?.error||`AI không xử lý được nhóm ${resolved.name}`);
       draft=String(result.content||"").trim();
@@ -1135,7 +1182,7 @@
           postLoopActive=false;return;
         }
         if(!trendPageReadyForGroup(group)){
-          await postStatus(`${groupMatches(group)?"Đang đồng bộ":"Đang mở"} nhóm đích ${Number(job.groupIndex||0)+1}/${groupTotal}: ${group.name} — bài ${Number(job.postIndex||0)+1}/${Math.max(1,Number(cfg.postsPerGroup)||1)}...`);
+          await postStatus(`${groupMatches(group)?"Đang đồng bộ":"Đang mở"} nhóm đích ${Number(job.groupIndex||0)+1}/${groupTotal}: ${group.name} — bài ${Number(job.postIndex||0)+1}/${trendJobTotalInGroup(cfg,job)}...`);
           await chrome.storage.local.set({trendPostIndex:index});
           const arrived=await gotoTrendPostGroupAndWait(group);
           if(!await postActive()){postLoopActive=false;return;}
@@ -1154,11 +1201,17 @@
             const prepared=await trendDraftForJob(cfg,job,index);
             job=prepared.job;group=prepared.group;
             if(!prepared.draft)throw new Error("chưa có bài viết lại");
-            await postStatus(`Đang đăng bài ${Number(job.postIndex||0)+1}/${Math.max(1,Number(cfg.postsPerGroup)||1)} tại ${group.name} (nhóm ${Number(job.groupIndex||0)+1}/${groupTotal})`);
+            await postStatus(`Đang đăng bài ${Number(job.postIndex||0)+1}/${trendJobTotalInGroup(cfg,job)} tại ${group.name} (nhóm ${Number(job.groupIndex||0)+1}/${groupTotal})`);
             const posted=await trendTypeAndSubmit(prepared.draft,group.name,index,!!cfg.anonymousMode,cfg.background,s.trendPostLastColor||"");
             if(!await postActive()){postLoopActive=false;return;}
             done++;index++;
-            const consumed=await consumeTrendSourcePosts(job.sourcePostIds);
+            // A single selected source can intentionally feed several target
+            // groups. Keep it in the learned list until its last assigned job
+            // has been confirmed, so a stopped/failed run can still resume or
+            // be retried without losing the source article early.
+            const futureSourceIds=new Set(cfg.jobs.slice(index).flatMap(item=>Array.isArray(item?.sourcePostIds)?item.sourcePostIds:[]).map(String));
+            const consumable=(Array.isArray(job.sourcePostIds)?job.sourcePostIds:[]).map(String).filter(id=>id&&!futureSourceIds.has(id));
+            const consumed=await consumeTrendSourcePosts(consumable);
             await chrome.storage.local.set({trendPostDone:done,trendPostIndex:index,trendPostLastColor:posted.backgroundApplied?posted.color:(s.trendPostLastColor||""),trendPostStage:"",trendPostSubmitIndex:-1,trendPostSubmitDispatchedAt:0,trendPostStatus:`Đã đăng ${done}/${total}: ${group.name}${posted.backgroundApplied?` — nền ${trendBackgroundColorName(posted.color)}`:""}${consumed?"":" — chưa xóa được bài học, sẽ giữ lại để kiểm tra"}`});
           }catch(e){
             const msg=String(e?.message||e);
@@ -1167,12 +1220,12 @@
               postLoopActive=false;return;
             }
             skipped++;index++;
-            await chrome.storage.local.set({trendPostSkipped:skipped,trendPostIndex:index,trendPostStage:"",trendPostSubmitIndex:-1,trendPostSubmitDispatchedAt:0,trendPostStatus:`Bỏ qua bài ${Number(job.postIndex||0)+1} của ${group.name}: ${msg}`});
+            await chrome.storage.local.set({trendPostSkipped:skipped,trendPostIndex:index,trendPostStage:"",trendPostSubmitIndex:-1,trendPostSubmitDispatchedAt:0,trendPostStatus:`Bỏ qua bài ${Number(job.postIndex||0)+1}/${trendJobTotalInGroup(cfg,job)} của ${group.name}: ${msg}`});
           }
         }
         if(index<total&&await postActive()){
           const delay=Math.min(3600,Math.max(5,Number(cfg.postDelay)||Number(cfg.interDelay)||30)),nextJob=cfg.jobs[index],nextGroup=trendJobGroup(cfg,nextJob);
-          await chrome.storage.local.set({trendPostIndex:index,trendPostNextAt:Date.now()+delay*1000,trendPostStatus:`Đã xong ${done}/${total}; chờ ${delay}s trước bài ${Number(nextJob.postIndex||0)+1}/${Math.max(1,Number(cfg.postsPerGroup)||1)} của ${nextGroup.name}`});
+          await chrome.storage.local.set({trendPostIndex:index,trendPostNextAt:Date.now()+delay*1000,trendPostStatus:`Đã xong ${done}/${total}; chờ ${delay}s trước bài ${Number(nextJob.postIndex||0)+1}/${trendJobTotalInGroup(cfg,nextJob)} của ${nextGroup.name}`});
           continue;
         }
         if(await postActive()){

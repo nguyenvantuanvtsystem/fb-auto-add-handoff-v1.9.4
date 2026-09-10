@@ -1,5 +1,19 @@
 # FB Auto Tool
 
+v1.9.58: bộ chọn phân bài B2 luôn hiển thị. Khi đang dùng **Dùng lần lượt bài còn lại**, nó được làm mờ và khóa kèm hướng dẫn chuyển sang **Dùng các bài đã tích** — không còn biến mất khỏi giao diện.
+
+v1.9.57: B2 có bộ chọn rõ ràng cho bài đã tích: **Nhiều bài → 1 nhóm**, **1 bài → nhiều nhóm**, hoặc **Nhiều bài → nhiều nhóm, tự chia đều**; radio mặc định **Tự nhận diện** giữ hành vi cũ. Chọn từng trường hợp sẽ kiểm tra chính xác số bài/số nhóm trước khi gọi AI hoặc đăng.
+
+v1.9.56: B2 **Học nhóm** tự lập kế hoạch khi dùng bài đã tích ở B1: một bài được biến thể cho mọi nhóm đích; nhiều bài được chia đều, không trùng nguồn. Kế hoạch hiển thị trước khi đăng (ví dụ 10 bài / 5 nhóm = 2 bài mỗi nhóm). Ô số bài mỗi nhóm chỉ áp dụng cho chế độ **Dùng lần lượt bài còn lại**.
+
+v1.9.55: giao diện B1 **Học nhóm** chỉ hiện ô **Số bài tối đa mỗi nhóm** khi tắt **Học đến hết**, giúp ô nhập luôn đủ rộng và tránh hiểu nhầm rằng cần điền khi đang cào không giới hạn.
+
+v1.9.54: B1 **Học nhóm** mặc định học đến hết bài Facebook có thể tải, không còn giới hạn cứng 30 bài/nhóm, 8 vòng cuộn hay 300 bài trong kho. Có thể tắt **Học đến hết** để đặt giới hạn riêng; chế độ không giới hạn dừng khi Facebook không còn bài mới, người dùng bấm Dừng hoặc kho lưu trữ đầy.
+
+v1.9.53: mode **Xác nhận lời mời** tự áp dụng bộ lọc trong cấu hình chung ngay khi bấm **Bắt đầu**; người dùng không cần bấm **Quét thử** trước. Quét thử chỉ còn là xem trước tùy chọn. Trạng thái chạy cũng báo rõ khi đang tự lọc theo cấu hình đã lưu.
+
+v1.9.52 bổ sung cho tab **Đăng bán** hai chế độ media rõ ràng: đăng toàn bộ media đã chọn hoặc random media theo từng nhóm. Kế hoạch random được chụp để reload vẫn giữ đúng selection và tránh lặp y hệt nhóm liền trước. Tab **Nuôi Page** vẫn gồm Page tham gia nhóm, đăng bài nhóm bằng AI theo chủ đề/bài gần đây, theo dõi Page theo từ khóa/bộ lọc và Comment AI bằng Page cho Bản tin hoặc Page đã theo dõi. Các luồng Page có state/selector/proof riêng; Comment AI cá nhân trong `feed.js` không thay đổi. Hồ sơ/cache dài hạn của Nuôi Page lưu qua IndexedDB extension, còn trạng thái chạy vẫn dùng `chrome.storage.local`.
+
 Chrome Extension hỗ trợ kết bạn, cào bài, đăng/share bài vào nhóm, tương tác bản tin và nội dung AI.
 
 
@@ -11,7 +25,7 @@ Tab **Kết bạn** hiện có ba mode đã triển khai:
 
 1. **Theo gợi ý**: mở trang Gợi ý kết bạn và chỉ quét thẻ hồ sơ trong khu vực gợi ý.
 2. **Thành viên có điểm chung**: tải danh sách nhóm đã tham gia, kiên nhẫn chờ Facebook tải mục này, tự bấm “Xem tất cả”, tiếp tục chờ nút “Thêm bạn bè” rồi xử lý lần lượt từ trên xuống. Nếu Facebook tải quá lâu, tiện ích tải lại một lần và tiếp tục chờ trước khi chuyển nhóm.
-3. **Xác nhận lời mời**: mở trang lời mời đến, cho phép điền số bạn chung tối thiểu, số nhóm chung tối thiểu, từ khóa quê quán/trường học, yêu cầu ảnh đại diện và bỏ qua hồ sơ thiếu dữ liệu. Có Quét thử để xem lý do đạt/không đạt; khi Bắt đầu, chỉ xác nhận sau khi Facebook trả về trạng thái đã là bạn bè.
+3. **Xác nhận lời mời**: mở trang lời mời đến, cho phép điền số bạn chung tối thiểu, số nhóm chung tối thiểu, từ khóa quê quán/trường học, yêu cầu ảnh đại diện và bỏ qua hồ sơ thiếu dữ liệu. Khi bấm **Bắt đầu**, tiện ích tự áp dụng bộ lọc cho từng hồ sơ; **Quét thử** chỉ dùng để xem trước lý do đạt/không đạt, không phải bước bắt buộc. Chỉ xác nhận sau khi Facebook trả về trạng thái đã là bạn bè.
 
 Theo bộ lọc tìm kiếm chưa có mode riêng trong phiên bản hiện tại; nếu bổ sung phải tạo logic và state riêng, không dùng lẫn với hai nguồn trên.
 
@@ -22,6 +36,19 @@ Bộ máy kết bạn dùng chung có delay Min–Max, quét thử không gửi,
 - Tải danh sách nhóm, tích chọn, lọc nhanh theo từ khóa tên nhóm.
 - Giới hạn **số nhóm muốn tương tác** (chạy N nhóm đầu theo thứ tự đã tích) và **số bài mỗi nhóm**, delay Min–Max, cảm xúc cố định hoặc ngẫu nhiên.
 - Bật **Bình luận AI** để mỗi bài đã thả cảm xúc được comment một lần bằng cấu hình AI dùng chung (fallback câu mẫu khi lỗi); lý do bỏ qua từng bài hiện rõ trong trạng thái.
+
+## Nuôi Page
+
+Tab **🌱 Nuôi Page** là nơi chứa các tính năng liên quan đến Page mà nick cá nhân đang quản trị.
+
+- Tải danh sách Page từ trang Pages của Facebook và chọn đúng một Page trước khi chạy.
+- Cho Page tham gia nhóm theo **từ khóa** hoặc theo **nhóm đề xuất**.
+- Trước mỗi lần tham gia, tiện ích phải xác minh Facebook đang hoạt động với tư cách Page, không phải nick cá nhân.
+- Câu hỏi nội quy dùng câu trả lời mẫu; câu hỏi mở có thể dùng AI với Provider/Model/Custom URL dùng chung. Nếu AI không trả lời đủ hoặc Facebook chưa nhận đủ ô, nhóm được bỏ qua.
+- State, counter, selector, run ID và proof của Page tách khỏi luồng tham gia nhóm của nick cá nhân.
+- **Đăng bài nhóm bằng AI:** nhập danh sách nhóm hoặc dùng nhóm Page đã tham gia; AI đọc tên nhóm và bài gần đây để tạo bài mở thảo luận, sau đó Page đăng một lần và chỉ tính khi có proof Facebook.
+- **Theo dõi Page:** tìm Page theo từ khóa, follower tối thiểu và từ khóa loại trừ; Page đã theo dõi được lưu riêng để làm nguồn cho Comment AI.
+- **Comment AI bằng Page:** chọn Bản tin hoặc Page đã theo dõi; AI đọc bài và tạo comment theo prompt Page, không chạy thêm bước phân loại chủ đề. Luồng Page không dùng state/history/selector/proof của Comment AI cá nhân.
 
 ## Ngôn ngữ và giao diện
 
@@ -50,14 +77,20 @@ Bộ máy kết bạn dùng chung có delay Min–Max, quét thử không gửi,
 ## Học bài nhóm và viết lại
 
 - Tab **📚 Học nhóm** mới: dùng lại danh sách nhóm đã tải ở các tính năng khác, không cần tải lại.
-- **B1:** có thể tích nhóm nguồn hoặc dán **link nhóm nguồn, mỗi dòng một link** → bấm **Học bài** (số bài mới nhất mỗi nhóm tùy chọn). Nếu ô link có dữ liệu, chỉ các URL trong ô được dùng; nếu ô link trống, chỉ các nhóm đã tích được dùng. Có thể ghi `URL | Tên nhóm` để AI nhận đúng tên hiển thị.
+- **B1:** có thể tích nhóm nguồn hoặc dán **link nhóm nguồn, mỗi dòng một link** → bấm **Học bài**. Mặc định bật **Học đến hết bài có thể tải (không giới hạn)**; nếu tắt, người dùng đặt số bài tối đa mỗi nhóm. Nếu ô link có dữ liệu, chỉ các URL trong ô được dùng; nếu ô link trống, chỉ các nhóm đã tích được dùng. Có thể ghi `URL | Tên nhóm` để AI nhận đúng tên hiển thị.
 - Bấm **Viết lại bằng AI**: AI đọc bài đã lưu, rút dàn ý rồi viết thành bài của bạn theo prompt `{groupName}`, chỉ xem trước, không đăng ngay.
 - **B2:** có thể tích nhóm đích hoặc dán **link nhóm đích, mỗi dòng một link** → bấm **Đăng bài viết lại**. Nếu ô link có dữ liệu, chỉ các URL trong ô được dùng; nếu ô link trống, chỉ các nhóm đã tích được dùng. Link-only không có tên sẽ được mở trước để lấy tên nhóm Facebook rồi mới gọi AI.
 - B2 có thêm **Prompt AI theo group name**, dùng `{groupName}`. Prompt này được ghép với prompt viết lại và chạy riêng cho từng nhóm đích.
 - B2 có tùy chọn **Bắt buộc đăng ẩn danh**. Khi bật, tiện ích chỉ nhập/bấm Đăng sau khi Facebook xác nhận switch **Đăng ẩn danh** trong composer và tự xác nhận hộp thoại “Bài viết ẩn danh” nếu Facebook hiện; nhóm không hỗ trợ hoặc không xác nhận được sẽ được bỏ qua, không tự chuyển sang đăng công khai. Trạng thái bài đang chờ quản trị viên phê duyệt cũng được xác nhận và giữ nhóm trước khi đi tiếp.
 - B2 có tùy chọn **Đăng kèm nền màu**: tắt để đăng chữ thường, chọn **Cố định một màu** hoặc **Random** trong các màu đã tích. Nền cố định phải đúng màu đã chọn; Random chỉ dùng nền trơn Facebook thực sự cung cấp, tránh lặp màu liên tiếp. Nội dung được rút gọn theo giới hạn ký tự nền; nếu nền không được Facebook xác nhận, nhóm được bỏ qua và không đăng chữ thường.
 - B2 cũng chờ nhóm/composer tải chậm và chờ bài hiển thị trước khi chuyển nhóm; trạng thái submit được lưu để reload không bấm Đăng lần hai.
-- B2 cho phép tích các bài đã học để dùng cho từng lượt hoặc chọn chế độ dùng lần lượt bài còn lại. Có thể đặt số bài mỗi nhóm, số nhóm và giãn cách giữa từng bài; bài nguồn chỉ bị xóa khỏi danh sách sau khi Facebook xác nhận đăng thành công.
+- v1.9.41: B2 ghi nhận lần đầu bài vừa đăng xuất hiện trong feed làm proof, rồi giữ nhóm đủ cửa sổ an toàn; tránh báo thất bại giả khi Facebook tái chế node bài ẩn danh sau khi đã hiển thị.
+- v1.9.42: B2 phân phối nguồn theo từng lượt: tích đúng 1 bài thì dùng lại bài đó cho nhiều nhóm; tích từ 2 bài trở lên thì mỗi slot nhóm/bài nhận một bài khác nhau theo thứ tự, không tự lặp. Nếu thiếu bài riêng, phiên báo lỗi trước khi đăng; bài dùng cho nhiều nhóm chỉ bị xóa sau job cuối đã xác nhận.
+- v1.9.45: mọi đường quay lại/reload Bảng tin của Comment AI đều dọn composer/lớp phủ do AI mở trước khi Facebook cảnh báo rời trang; lớp phủ rỗng được đóng, draft có chữ vẫn được bảo toàn và phiên dừng fail-closed.
+- v1.9.44: Comment AI không mắc vô hạn khi Facebook mở lớp phủ bài viết nhưng chưa dựng ô nhập; chỉ đóng lớp phủ rỗng vừa mở bởi cú click của luồng, reload có kiểm soát khi bài rời DOM quá lâu và giữ nguyên bộ đếm/guard. Draft có chữ vẫn được bảo toàn và phiên dừng fail-closed.
+- v1.9.43: Comment AI không xóa nhầm bản nháp người dùng trong bài đã có comment; nếu Facebook giữ composer AI tạm thời khi tab chạy nền, phiên sẽ giữ bài và thử dọn lại thay vì dừng toàn bộ.
+- B2 khi dùng bài đã tích tự lập kế hoạch: **1 bài / nhiều nhóm** thì biến thể bài đó cho từng nhóm; **nhiều bài / 1 nhóm** thì đăng toàn bộ các bài vào nhóm đó; **nhiều bài / nhiều nhóm** thì chia đều các bài, không trùng nguồn (ví dụ 10 bài / 5 nhóm = 2 bài mỗi nhóm). Có radio chọn rõ từng trường hợp hoặc chọn **Tự nhận diện**; các lựa chọn được kiểm tra trước khi gọi AI hoặc đăng. Kế hoạch hiện trước khi đăng. Chế độ **Dùng lần lượt bài còn lại** mới dùng số bài mỗi nhóm; bài nguồn chỉ bị xóa khỏi danh sách sau khi Facebook xác nhận đăng thành công.
+- Phân phối bài B2: nếu chỉ tích 1 bài, bài đó được dùng cho nhiều nhóm; nếu tích nhiều bài, các bài được gán lần lượt vào từng slot đăng (nhóm 1/bài 1, nhóm 2/bài 2...; khi mỗi nhóm có nhiều bài thì lấp đầy từng nhóm theo thứ tự), không dùng trùng. Không đủ bài cho số slot sẽ dừng trước khi đăng.
 - B1 có thể xóa thủ công từng bài không phù hợp hoặc xóa hàng loạt các bài đang tích; tiện ích hỏi xác nhận trước khi xóa khỏi kho bài học.
 - Prompt B2 có hai lớp: Prompt viết lại quyết định cách biến bài đã học thành bài mới; Prompt theo group name điều chỉnh bài cho từng nhóm. Cả hai nên yêu cầu không sao chép nguyên văn, không bịa dữ kiện và có thể chọn hướng thảo luận, tương tác hoặc hỏi–đáp.
 
@@ -67,11 +100,13 @@ Bộ máy kết bạn dùng chung có delay Min–Max, quét thử không gửi,
 
 - Có tab **Đăng bán** riêng, không trộn state/selector/counter với Đăng bài AI, Comment AI hoặc Share bài.
 - Nhập bài viết/thông tin sản phẩm và ghi chú tùy chọn; có thể chọn nhiều ảnh và video cùng lúc (tối đa 35 MB mỗi file). Không chọn media thì vẫn đăng chữ bình thường.
+- Có hai chế độ media: **Đăng toàn bộ media đã chọn** hoặc **Random media theo từng nhóm**. Với Random, chọn số media mỗi nhóm (1–20); kế hoạch được lưu theo phiên, tránh lặp đúng cùng một tập media giữa hai nhóm liền trước nhưng không phải bảo đảm tránh giới hạn spam của Facebook.
 - Chọn danh sách nhóm đã tham gia, lọc theo từ khóa, giới hạn số nhóm và delay giữa các nhóm. Thứ tự xử lý đúng theo danh sách đã tích.
 - Prompt mặc định tạo bài tiếng Việt theo hướng vừa bán hàng vừa hỏi ý kiến; hỗ trợ `{groupName}`, `{sourceText}`, `{productInfo}` và tự lưu khi chỉnh sửa.
 - AI tạo biến thể riêng cho từng nhóm, có thể dùng hồ sơ văn phong đã cào và cấu hình Provider/API Key/Model/Custom URL dùng chung.
 - Bản xem trước và nút Test API không đăng thật. Khi chạy, chỉ tăng bộ đếm sau khi Facebook xác nhận composer đã gửi; nhóm lỗi được ghi nhận bỏ qua để không kẹt toàn bộ phiên.
 - Khi đăng thật, luồng chờ nhóm/composer tải chậm, chờ bài hiển thị rồi mới tăng bộ đếm và giữ nhóm 8–12 giây trước khi sang nhóm kế tiếp.
+- Proof sau khi bấm Đăng quét cả các post-like node trong main/feed, không loại thẻ bài chỉ vì có ô bình luận; thông báo hoặc banner Facebook báo đã đăng/đang chờ phê duyệt (kể cả banner không có role) được chấp nhận. Cửa sổ 30 giây là thời gian chờ proof đầu tiên, sau đó giữ nhóm 8–12 giây riêng để không báo lỗi giả khi bài lên chậm.
 
 ## Share bài vào nhóm
 
@@ -96,6 +131,8 @@ Bộ máy kết bạn dùng chung có delay Min–Max, quét thử không gửi,
 - `content.js`: ba chế độ kết bạn và bộ máy xác nhận/chống trùng.
 - `scrape.js`: cào bài và xuất dữ liệu.
 - `group.js`: tham gia nhóm và trả lời câu hỏi.
+- `page.js`: chọn Page, tham gia nhóm, đăng bài nhóm AI, theo dõi Page và Comment AI bằng Page; state machine và actor verification riêng.
+- `pageStore.js`: IndexedDB cho dữ liệu dài hạn của Nuôi Page.
 - Luồng **Khám phá** dùng chung cấu hình AI/câu trả lời của tham gia theo từ khóa; khi gặp màn hình “Xem xét quyền tham gia”, tiện ích chọn quy tắc, đi qua các bước Tiếp/Tiếp tục, dùng AI cho câu hỏi mở và câu mẫu cho nội quy.
 - `feed.js`: tương tác bản tin, nhóm, đăng bài và comment AI.
 - `share.js`: đọc bài nguồn, tạo lời dẫn riêng và share link-preview lần lượt vào đúng nhóm.

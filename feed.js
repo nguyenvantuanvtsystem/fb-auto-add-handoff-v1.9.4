@@ -13,6 +13,7 @@
   // composer người dùng chưa được luồng này sở hữu.
   let aiCommentDraftBox=null, aiCommentDraftScope=null;
   let aiCommentDraftIdentity="", aiCommentDraftSignature="";
+  let aiActivationActive=false,aiActivationBox=null,aiActivationScope=null;
 
   function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
   function rand(min,max){ return Math.floor(Math.random()*(max-min+1))+min; }
@@ -515,6 +516,52 @@
       return !/(?:nhập tin nhắn|type a message|viết tin nhắn|tin nhắn|message|chat)/.test(label)||/(?:bình luận|comment)/.test(label);
     });
   }
+  function rememberAIActivation(box,scope){
+    aiActivationActive=true;
+    if(box)aiActivationBox=box;
+    if(scope)aiActivationScope=scope;
+  }
+  function clearAIActivationMemory(){
+    aiActivationActive=false;
+    aiActivationBox=null;
+    aiActivationScope=null;
+  }
+  function findAIActivationDialog(){
+    return [...document.querySelectorAll('[role="dialog"]')].reverse().find(dialog=>{
+      if(!isRenderedElement(dialog))return false;
+      const text=String(dialog.innerText||dialog.textContent||"");
+      return /bài viết|post|bình luận|comment/i.test(text);
+    })||null;
+  }
+  async function cleanupAIActivation(reason=""){
+    if(!aiActivationActive)return true;
+    let box=aiActivationBox?.isConnected?aiActivationBox:null;
+    let scope=aiActivationScope?.isConnected?aiActivationScope:null;
+    if(!box){
+      const opened=visibleCommentBoxes().find(candidate=>candidate.closest('[role="dialog"]'))||null;
+      if(opened){
+        box=opened;
+        scope=scope||opened.closest('[role="dialog"]');
+      }
+    }
+    scope=scope||findAIActivationDialog();
+    if(box&&commentDraftText(box)){
+      const cleared=await clearAICommentDraft(box);
+      if(!cleared){
+        console.warn(`[AI] Không thể xóa bản nháp trước khi ${reason||"điều hướng"}`);
+        chrome.storage.local.set({aiStatus:t("ai2.draftBlocked",{from:aiCount,to:aiTarget})});
+        return false;
+      }
+    }
+    if(scope?.isConnected)await closeExactCommentOverlay(scope);
+    clearAIActivationMemory();
+    return true;
+  }
+  async function prepareAIPageTransition(reason=""){
+    const activationCleaned=await cleanupAIActivation(reason);
+    if(!activationCleaned)return false;
+    return cleanupAICommentComposer(undefined,undefined,reason);
+  }
   function findCommentBoxOpenedByClick(previousBoxes){
     const opened=visibleCommentBoxes().filter(box=>!previousBoxes.has(box));
     const box=opened.find(b=>b.closest('[role="dialog"]'))||opened[0]||null;
@@ -571,7 +618,10 @@
   async function clearAICommentDraft(box){
     if(!box?.isConnected||isMessengerChatBox(box))return true;
     if(!commentDraftText(box))return true;
-    try{box.focus();}catch(_){ }
+    try{box.focus();box.click();}catch(_){ }
+    // Facebook đôi khi nhận focus DOM nhưng không cập nhật composer nội bộ;
+    // click tin cậy trước khi gửi phím giúp đồng bộ đúng editor trong modal.
+    try{await trustedMouse(box,"click");}catch(_){ }
     // Facebook giữ draft ở contenteditable; Ctrl+A + Backspace qua CDP làm
     // thay đổi giống thao tác người dùng và cập nhật state nội bộ của Facebook.
     const selectModifier=/Mac|iPhone|iPad/i.test(navigator.platform||"")?4:2;
@@ -583,8 +633,23 @@
       try{
         const selection=window.getSelection(),range=document.createRange();
         range.selectNodeContents(box);selection.removeAllRanges();selection.addRange(range);
+        try{document.execCommand("selectAll",false,null);}catch(_){ }
         document.execCommand("delete",false,null);
+        box.dispatchEvent(new InputEvent("beforeinput",{bubbles:true,inputType:"deleteContentBackward",data:null}));
         box.dispatchEvent(new InputEvent("input",{bubbles:true,inputType:"deleteContentBackward",data:null}));
+      }catch(_){ }
+      await sleep(250);
+    }
+    if(commentDraftText(box)){
+      // Last resort chỉ áp dụng cho composer đã được Comment AI sở hữu. Việc
+      // phát sự kiện đầy đủ giúp React/Facebook ghi nhận trạng thái rỗng.
+      try{
+        box.textContent="";
+        box.innerHTML="";
+        try{document.execCommand("insertText",false,"");}catch(_){ }
+        box.dispatchEvent(new InputEvent("beforeinput",{bubbles:true,inputType:"deleteContentBackward",data:null}));
+        box.dispatchEvent(new InputEvent("input",{bubbles:true,inputType:"deleteContentBackward",data:null}));
+        box.dispatchEvent(new Event("change",{bubbles:true}));
       }catch(_){ }
       await sleep(250);
     }
@@ -592,7 +657,13 @@
   }
   async function cleanupAICommentComposer(scope=aiCommentDraftScope,box=aiCommentDraftBox,reason="",closeView=true){
     const draftScope=scope||aiCommentDraftScope;
-    let draftBox=findLiveAICommentDraftBox(draftScope,box||aiCommentDraftBox);
+    // Chỉ dọn composer mà Comment AI đã sở hữu. Trước đây khi đang xử lý
+    // một bài đã có comment, helper quét mọi ô nhập trong scope và có thể
+    // đụng vào bản nháp do người dùng tự gõ; nếu Facebook không cho xóa ô
+    // đó, cả phiên bị báo "Đã dừng xử lý bài hiện tại" dù không phải lỗi AI.
+    const ownedDraft=box||aiCommentDraftBox;
+    const hasOwnedDraft=!!ownedDraft||!!aiCommentDraftIdentity;
+    let draftBox=hasOwnedDraft?findLiveAICommentDraftBox(draftScope,ownedDraft):null;
     if(!draftBox)return true;
     let cleared=await clearAICommentDraft(draftBox);
     // Composer có thể được Facebook thay DOM ngay sau lần xóa đầu tiên;
@@ -699,16 +770,54 @@
     const proof=normalize(commentText).slice(0,60);
     const postSignature=normalize(extractPostText(currentArticle)).slice(0,60);
     let routeRetries=0,targetDetailOpened=false,commentActivationStarted=false;
-    let boxWaitStartedAt=0;
+    let boxWaitStartedAt=0,refindStartedAt=0;
     let activationPreviousBoxes=new Set(),activatedBox=null,activatedScope=null;
+    const cleanupUnfinishedActivation=async()=>{
+      // Facebook đôi khi mở lớp phủ bài viết nhưng chưa dựng contenteditable.
+      // Chỉ đóng lớp phủ vừa xuất hiện sau cú click này; nếu ô đó đã có chữ,
+      // coi là draft cần bảo toàn và dừng fail-closed thay vì xóa của người dùng.
+      const opened=findCommentBoxOpenedByClick(activationPreviousBoxes)||(()=>{
+        const dialog=[...document.querySelectorAll('[role="dialog"]')].find(d=>{
+          if(!isRenderedElement(d))return false;
+          const text=String(d.innerText||d.textContent||"");
+          return /bài viết|post|bình luận|comment/i.test(text);
+        });
+        if(!dialog)return null;
+        const box=visibleCommentBoxes().find(b=>b.closest('[role="dialog"]')===dialog);
+        return {box:null,scope:dialog,openedWithoutBox:!box};
+      })();
+      if(!opened)return true;
+      if(opened.box&&commentDraftText(opened.box))return false;
+      await closeExactCommentOverlay(opened.scope);
+      clearAIActivationMemory();
+      return true;
+    };
     const finishCommentView=async scope=>{
-      const cleaned=await cleanupAICommentComposer(scope,undefined,"xác minh và rời bài");
-      if(!cleaned)return false;
+      // Facebook đôi lúc giữ composer cũ thêm vài nhịp, nhất là khi tab bị
+      // background-throttle lúc màn hình tắt. Không kết thúc toàn bộ phiên
+      // vì lỗi dọn giao diện tạm thời; giữ đúng bài và thử lại cho tới khi
+      // người dùng bấm Dừng. Bộ đếm/lịch sử chỉ được cập nhật sau khi hàm
+      // này trả về thành công.
+      let cleanupAttempt=0;
+      while(isAICommenting){
+        const cleaned=await cleanupAICommentComposer(scope,undefined,"xác minh và rời bài");
+        if(cleaned)break;
+        cleanupAttempt++;
+        if(cleanupAttempt>=5){
+          await chrome.storage.local.set({aiStatus:t("ai2.draftBlocked",{from:aiCount,to:aiTarget})});
+          isAICommenting=false;
+          return false;
+        }
+        await chrome.storage.local.set({aiStatus:t("ai2.draftRetry",{from:aiCount+1,to:aiTarget,attempt:cleanupAttempt})});
+        await sleep(Math.min(3000,800+cleanupAttempt*400));
+      }
+      if(!isAICommenting)return false;
       if(targetDetailOpened){
         await chrome.storage.local.set({aiStatus:t("ai2.verified",{from:aiCount+1,to:aiTarget})});
         return returnToMainFeedViaHistory();
       }
       await closeExactCommentOverlay(scope);
+      clearAIActivationMemory();
       return true;
     };
 
@@ -732,10 +841,35 @@
       if(!targetDetailOpened&&(!currentArticle?.isConnected || (targetIdentity && postIdentity(currentArticle)!==targetIdentity))){
         currentArticle=findFeedPostByIdentity(targetIdentity);
         if(!currentArticle){
+          if(!refindStartedAt)refindStartedAt=Date.now();
+          const refindSeconds=Math.floor((Date.now()-refindStartedAt)/1000);
+          if(refindSeconds>=20){
+            const reloadState=await chrome.storage.local.get("aiFeedReloadAttempts");
+            const reloadAttempts=(parseInt(reloadState.aiFeedReloadAttempts)||0)+1;
+            if(reloadAttempts<=10){
+              const cleaned=await cleanupUnfinishedActivation();
+              if(!cleaned){
+                await chrome.storage.local.set({aiStatus:t("ai2.draftBlocked",{from:aiCount,to:aiTarget})});
+                return "stopped";
+              }
+              await chrome.storage.local.set({
+                pendingAIComment:true,
+                pendingAIConfig:{target:aiTarget,minDelay:aiMinDelay/1000,maxDelay:aiMaxDelay/1000,economyMode:aiEconomyMode,batchSize:aiBatchSize,cacheDays:aiCacheDays},
+                aiFeedReloadAttempts:reloadAttempts,
+                isAICommenting:true,
+                aiStatus:t("ai2.reloading",{n:reloadAttempts,from:aiCount,to:aiTarget})
+              });
+              location.reload();
+              return "page-reloading";
+            }
+            await chrome.storage.local.set({aiStatus:t("ai2.gaveUp",{from:aiCount,to:aiTarget}),aiFeedReloadAttempts:0});
+            return "stopped";
+          }
           chrome.storage.local.set({aiStatus:t("ai2.refinding",{from:aiCount,to:aiTarget})});
           await sleep(1000);
           continue;
         }
+        refindStartedAt=0;
       }
 
       // Sau khi nút Bình luận đã mở đúng trang chi tiết, tuyệt đối không
@@ -743,7 +877,7 @@
       if(targetDetailOpened&&commentActivationStarted){
         const opened=findCommentBoxOpenedByClick(activationPreviousBoxes);
         const candidate=opened||(()=>{const b=visibleCommentBoxes().find(x=>x.closest('main'))||visibleCommentBoxes()[0];return b?{box:b,scope:findFeedPostContainer(b)||b.closest('main')||b.parentElement}:null;})();
-        if(candidate){activatedBox=candidate.box;activatedScope=candidate.scope;currentArticle=candidate.scope;}
+        if(candidate){activatedBox=candidate.box;activatedScope=candidate.scope;currentArticle=candidate.scope;rememberAIActivation(candidate.box,candidate.scope);}
         else{
           await chrome.storage.local.set({aiStatus:t("ai2.waitBoxOpen",{from:aiCount,to:aiTarget})});
           await sleep(1000);
@@ -769,10 +903,37 @@
       if(!box){
         if(commentActivationStarted){
           const opened=findCommentBoxOpenedByClick(activationPreviousBoxes);
-          if(opened){box=opened.box;commentScope=opened.scope;activatedBox=box;activatedScope=commentScope;}
+          if(opened){box=opened.box;commentScope=opened.scope;activatedBox=box;activatedScope=commentScope;rememberAIActivation(box,commentScope);}
           if(!box){
             const waitedSec=boxWaitStartedAt?Math.max(1,Math.round((Date.now()-boxWaitStartedAt)/1000)):0;
             await chrome.storage.local.set({aiStatus:t("ai2.waitBoxSecs",{secs:waitedSec,from:aiCount,to:aiTarget})});
+            // Facebook đôi khi giữ lớp phủ mở nhưng không dựng contenteditable;
+            // chờ vô hạn sẽ làm phiên mắc kẹt và khi reload tạo cảnh báo
+            // "Bạn chưa hoàn tất bình luận". Sau 60 giây, chỉ dọn lớp phủ do
+            // chính Comment AI mở (draft có chữ thì fail-closed), giữ nguyên
+            // bộ đếm/guard rồi reload có kiểm soát để dựng lại bài.
+            if(waitedSec>=60){
+              const cleaned=await cleanupUnfinishedActivation();
+              if(!cleaned){
+                await chrome.storage.local.set({aiStatus:t("ai2.draftBlocked",{from:aiCount,to:aiTarget})});
+                return "stopped";
+              }
+              const reloadState=await chrome.storage.local.get("aiFeedReloadAttempts");
+              const reloadAttempts=(parseInt(reloadState.aiFeedReloadAttempts)||0)+1;
+              if(reloadAttempts<=10){
+                await chrome.storage.local.set({
+                  pendingAIComment:true,
+                  pendingAIConfig:{target:aiTarget,minDelay:aiMinDelay/1000,maxDelay:aiMaxDelay/1000,economyMode:aiEconomyMode,batchSize:aiBatchSize,cacheDays:aiCacheDays},
+                  aiFeedReloadAttempts:reloadAttempts,
+                  isAICommenting:true,
+                  aiStatus:t("ai2.reloading",{n:reloadAttempts,from:aiCount,to:aiTarget})
+                });
+                location.reload();
+                return "page-reloading";
+              }
+              await chrome.storage.local.set({aiStatus:t("ai2.gaveUp",{from:aiCount,to:aiTarget}),aiFeedReloadAttempts:0});
+              return "stopped";
+            }
             await sleep(1000);
             continue;
           }
@@ -788,6 +949,7 @@
 
         activationPreviousBoxes=new Set(visibleCommentBoxes());
         commentActivationStarted=true;
+        rememberAIActivation(null,currentArticle);
         boxWaitStartedAt=Date.now();
         try{commentBtn.click();}catch(_){ }
         await sleep(500);
@@ -824,7 +986,7 @@
             if(targetDetailOpened&&isFacebookPostDetailPage()){
               const opened=findCommentBoxOpenedByClick(activationPreviousBoxes);
               const fallback=opened||(()=>{const b=visibleCommentBoxes().find(x=>x.closest('main'))||visibleCommentBoxes()[0];return b?{box:b,scope:findFeedPostContainer(b)||b.closest('main')||b.parentElement}:null;})();
-              if(fallback){box=fallback.box;commentScope=fallback.scope;currentArticle=commentScope;}
+              if(fallback){box=fallback.box;commentScope=fallback.scope;currentArticle=commentScope;rememberAIActivation(box,commentScope);}
             }else{currentArticle=null;break;}
           }
            if(currentArticle?.isConnected){
@@ -834,7 +996,7 @@
            }
            if(!box){
             const opened=findCommentBoxOpenedByClick(activationPreviousBoxes);
-            if(opened){box=opened.box;commentScope=opened.scope;}
+            if(opened){box=opened.box;commentScope=opened.scope;rememberAIActivation(box,commentScope);}
            }
            if(!box){
             const replacement=findFeedPostByIdentity(targetIdentity);
@@ -849,7 +1011,24 @@
           if(wait%5===4) chrome.storage.local.set({aiStatus:t("ai2.waitBoxDots",{secs:Math.ceil((wait+1)*0.4),from:aiCount,to:aiTarget})});
         }
         if(!isAICommenting) return "stopped";
-        if(!box) continue;
+        if(!box){
+          const cleaned=await cleanupUnfinishedActivation();
+          if(!cleaned){
+            await chrome.storage.local.set({aiStatus:t("ai2.draftBlocked",{from:aiCount,to:aiTarget})});
+            return "stopped";
+          }
+          targetDetailOpened=false;
+          commentActivationStarted=false;
+          boxWaitStartedAt=0;
+          activationPreviousBoxes=new Set();
+          activatedBox=null;
+          activatedScope=null;
+          clearAIActivationMemory();
+          currentArticle=null;
+          chrome.storage.local.set({aiStatus:t("ai2.refinding",{from:aiCount,to:aiTarget})});
+          await sleep(700);
+          continue;
+        }
         activatedBox=box;activatedScope=commentScope;
       }
 
@@ -1066,6 +1245,7 @@
 
   function isMainFacebookFeed(){return location.hostname.endsWith("facebook.com")&&(location.pathname==="/"||location.pathname==="/home.php");}
   async function returnToMainFeedViaHistory(maxSteps=4){
+    if(!await prepareAIPageTransition("quay lại Bảng tin"))return false;
     for(let step=0;step<maxSteps&&!isMainFacebookFeed();step++){
       if(!location.hostname.endsWith("facebook.com"))return false;
       try{ history.go(-1); }catch(_){ return false; }
@@ -1214,6 +1394,9 @@
           isAICommenting=false;
           break;
         }
+        if(ok==="page-reloading"){
+          return;
+        }
         if(ok==="navigated"){
           await chrome.storage.local.set({pendingAIComment:true,pendingAIConfig:{target:aiTarget,minDelay:aiMinDelay/1000,maxDelay:aiMaxDelay/1000,economyMode:aiEconomyMode,batchSize:aiBatchSize,cacheDays:aiCacheDays},aiStatus:t("ai2.navBlocked",{from:aiCount,to:aiTarget})});
           location.href="https://www.facebook.com/";return;
@@ -1277,6 +1460,8 @@
             });
             await sleep(rand(2500,4500));
             if(!isAICommenting)return;
+            const prepared=await prepareAIPageTransition("tải lại Bảng tin");
+            if(!prepared){isAICommenting=false;return;}
             location.reload();
             return;
           }
@@ -2510,5 +2695,5 @@
     }
   })();
 
-  console.log("[Feed] feed.js loaded v1.9.32");
+  console.log("[Feed] feed.js loaded v1.9.45");
 })();

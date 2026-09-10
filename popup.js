@@ -20,6 +20,7 @@ getUnifiedAiConfig().then(c=>{if(c.key)persistUnifiedAiConfig(c);}).catch(()=>{}
 const tabAdd = $("tabAdd");
 const tabScrape = $("tabScrape");
 const tabGroup = $("tabGroup");
+const tabPage = $("tabPage");
 const tabShare = $("tabShare");
 const tabSales = $("tabSales");
 const tabTrend = $("tabTrend");
@@ -27,16 +28,18 @@ const tabFeed = $("tabFeed");
 const panelAdd = $("panelAdd");
 const panelScrape = $("panelScrape");
 const panelGroup = $("panelGroup");
+const panelPage = $("panelPage");
 const panelShare = $("panelShare");
 const panelSales = $("panelSales");
 const panelTrend = $("panelTrend");
 const panelFeed = $("panelFeed");
 function showTab(which){
-  [tabAdd,tabScrape,tabGroup,tabShare,tabSales,tabTrend,tabFeed].forEach(t=>t&&t.classList.remove("active"));
-  [panelAdd,panelScrape,panelGroup,panelShare,panelSales,panelTrend,panelFeed].forEach(p=>p&&p.classList.add("hidden"));
+  [tabAdd,tabScrape,tabGroup,tabPage,tabShare,tabSales,tabTrend,tabFeed].forEach(t=>t&&t.classList.remove("active"));
+  [panelAdd,panelScrape,panelGroup,panelPage,panelShare,panelSales,panelTrend,panelFeed].forEach(p=>p&&p.classList.add("hidden"));
   if(which==="add"){ tabAdd.classList.add("active"); panelAdd.classList.remove("hidden"); }
   else if(which==="scrape"){ tabScrape.classList.add("active"); panelScrape.classList.remove("hidden"); }
   else if(which==="group"){ tabGroup.classList.add("active"); panelGroup.classList.remove("hidden"); }
+  else if(which==="page"){ tabPage.classList.add("active"); panelPage.classList.remove("hidden"); try{refreshPageAiSummary();}catch(_){} }
   else if(which==="share"){ tabShare.classList.add("active"); panelShare.classList.remove("hidden"); }
   else if(which==="sales"){ tabSales.classList.add("active"); panelSales.classList.remove("hidden"); try{refreshSalesAiSummary();}catch(_){} }
   else if(which==="trend"){ tabTrend.classList.add("active"); panelTrend.classList.remove("hidden"); try{refreshTrendAiSummary();}catch(_){} }
@@ -46,6 +49,7 @@ function showTab(which){
 tabAdd.onclick = () => showTab("add");
 tabScrape.onclick = () => showTab("scrape");
 tabGroup.onclick = () => {showTab("group");refreshUnifiedAiUi();};
+tabPage.onclick = () => {showTab("page");refreshPageAiSummary();};
 tabShare.onclick = () => {showTab("share");refreshShareAiSummary();};
 tabSales.onclick = () => {showTab("sales");refreshSalesAiSummary();};
 tabTrend.onclick = () => {showTab("trend");try{refreshTrendAiSummary();}catch(_){}};
@@ -329,7 +333,7 @@ startBtn.addEventListener("click", async () => {
   const {cfg,tab:initialTab}=await buildFriendConfig();
   if(cfg.minDelay>cfg.maxDelay){statusEl.textContent=t("p.gjBadDelay");return;}
   if(cfg.mode==="group-common"&&!cfg.groups.length){statusEl.textContent=t("p.frNeedGroups");return;}
-  const busyOther=await chrome.storage.local.get(["isRunning","friendConfirmActive","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);
+  const busyOther=await chrome.storage.local.get(["isRunning","friendConfirmActive","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","groupInteractActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);
   if(Object.values(busyOther).some(Boolean)){statusEl.textContent=t("c.frBusyOther");return;}
   const targetUrl=friendTargetUrl(cfg);
   const friendRunId=`friend-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
@@ -524,7 +528,7 @@ async function requestDownload(format) {
 }
 
 scrapeBtn.addEventListener("click", async () => {
-  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);if(shareRun.groupShareActive||shareRun.salesPostActive||shareRun.trendLearnActive||shareRun.trendPostActive){scrapeStatus.textContent=t("p.shBusyScrape");return;}
+  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"]);if(Object.values(shareRun).some(Boolean)){scrapeStatus.textContent=(shareRun.pageGroupJoinActive||shareRun.pageGroupPostActive||shareRun.pageWatchActive||shareRun.pageCommentActive)?t("pg.busyOther"):t("p.shBusyScrape");return;}
   if(isScraping)return;
   const sourceUrl = scrapeSourceUrl.value.trim();
   if(sourceUrl){
@@ -620,6 +624,282 @@ chrome.storage.onChanged.addListener(changes => {
   if (changes.scrapeReady) updateDownloadVisibility(changes.scrapeReady.newValue);
 });
 
+// NUÔI PAGE - chọn Page đang quản trị + tham gia nhóm theo nguồn riêng.
+// Không dùng lại state/counter/selector/proof của group.js.
+const pageStatus=$("pageStatus"),pageJoinStatus=$("pageJoinStatus"),managedPageList=$("managedPageList");
+const loadManagedPagesBtn=$("loadManagedPagesBtn"),refreshManagedPagesBtn=$("refreshManagedPagesBtn");
+const pageModeKeywordBtn=$("pageModeKeywordBtn"),pageModeDiscoverBtn=$("pageModeDiscoverBtn"),pageKeywordOptions=$("pageKeywordOptions");
+const pageGroupKeyword=$("pageGroupKeyword"),pageGroupTarget=$("pageGroupTarget"),pageGroupMinDelay=$("pageGroupMinDelay"),pageGroupMaxDelay=$("pageGroupMaxDelay");
+const pageGroupAnswers=$("pageGroupAnswers"),pageGroupAiEnabled=$("pageGroupAiEnabled"),pageGroupAiPrompt=$("pageGroupAiPrompt");
+const pageGroupStartBtn=$("pageGroupStartBtn"),pageGroupStopBtn=$("pageGroupStopBtn"),pageGroupResetBtn=$("pageGroupResetBtn"),pageGroupCount=$("pageGroupCount");
+let managedPages=[],selectedManagedPage=null,pageJoinMode="keyword",pageJoinRunning=false;
+
+function pageEsc(value){return String(value||"").replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));}
+function pageKeyForPopup(page){
+  try{const u=new URL(String(page?.url||""));return u.searchParams.get("id")||u.pathname.replace(/\/+$/g,"").toLowerCase()||String(page?.name||"").toLowerCase();}catch{return String(page?.id||page?.name||"").toLowerCase();}
+}
+function renderManagedPages(pages,selectedKey=""){
+  managedPages=Array.isArray(pages)?pages:[];
+  if(!managedPages.length){managedPageList.innerHTML='<div class="hint" style="padding:6px">'+t("pg.noPages")+'</div>';return;}
+  const chosen=selectedKey||pageKeyForPopup(selectedManagedPage);
+  managedPageList.innerHTML=managedPages.map((page,index)=>{
+    const key=pageKeyForPopup(page),checked=key===chosen?"checked":"";
+    return `<label style="display:flex;align-items:center;gap:8px;padding:7px;margin:0;border-bottom:1px solid #eee;cursor:pointer"><input class="managed-page-radio" type="radio" name="managedPage" value="${pageEsc(key)}" ${checked} style="width:auto"><span style="display:flex;flex-direction:column;min-width:0"><b style="font-size:12px;overflow:hidden;text-overflow:ellipsis">${pageEsc(page.name||t("pg.pageFallback",{n:index+1}))}</b><small style="color:#65676b;overflow:hidden;text-overflow:ellipsis">${pageEsc(page.url||"")}</small></span></label>`;
+  }).join("");
+  const picked=managedPages.find(page=>pageKeyForPopup(page)===chosen);
+  if(picked)selectedManagedPage=picked;
+}
+function setPageMode(mode){
+  if(pageJoinRunning&&mode!==pageJoinMode){pageJoinStatus.textContent=t("pg.modeLocked");return;}
+  pageJoinMode=mode==="discover"?"discover":"keyword";
+  pageModeKeywordBtn.style.background=pageJoinMode==="keyword"?"#1565c0":"#e4e6eb";
+  pageModeKeywordBtn.style.color=pageJoinMode==="keyword"?"#fff":"#050505";
+  pageModeDiscoverBtn.style.background=pageJoinMode==="discover"?"#00897b":"#e4e6eb";
+  pageModeDiscoverBtn.style.color=pageJoinMode==="discover"?"#fff":"#050505";
+  pageKeywordOptions.classList.toggle("hidden",pageJoinMode!=="keyword");
+  chrome.storage.sync.set({pageJoinMode});
+}
+function setPageRunning(value){
+  pageJoinRunning=!!value;
+  pageGroupStartBtn.textContent=pageJoinRunning?t("p.pgBusy"):t("pg.start");
+  pageGroupStartBtn.classList.toggle("running",pageJoinRunning);
+}
+async function refreshPageAiSummary(){
+  // Giữ cấu hình AI thống nhất; không tạo ô API key riêng cho Nuôi Page.
+  try{const cfg=await getUnifiedAiConfig();pageStatus.dataset.aiReady=cfg.key&&cfg.model?"true":"false";}catch(_){}
+}
+async function scanManagedPages(){
+  let tab=await getActiveTab();
+  if(!tab){pageStatus.textContent=t("pg.noFb");return;}
+  pageStatus.textContent=t("pg.openManager");
+  if(!/facebook\.com\/pages(?:[/?]|$)/i.test(tab.url||"")){
+    await chrome.tabs.update(tab.id,{url:"https://www.facebook.com/pages/?category=your_pages"});
+    await new Promise(resolve=>setTimeout(resolve,4500));
+  }
+  const response=await new Promise(resolve=>chrome.tabs.sendMessage(tab.id,{action:"scanManagedPages"},async result=>{
+    if(chrome.runtime.lastError){const retry=await autoReloadAndRetry(tab.id,{action:"scanManagedPages"},pageStatus);resolve(retry.ok?(retry.res||{ok:false}):{ok:false});}
+    else resolve(result||{ok:false});
+  }));
+  if(!response?.ok){pageStatus.textContent=response?.error||t("pg.scanFail");return;}
+  renderManagedPages(response.pages||[],pageKeyForPopup(selectedManagedPage));
+  await chrome.storage.local.set({managedPages:response.pages||[]});
+  pageStatus.textContent=response.pages?.length?t("pg.loadedPages",{n:response.pages.length}):t("pg.noPages");
+}
+loadManagedPagesBtn.onclick=scanManagedPages;
+refreshManagedPagesBtn.onclick=scanManagedPages;
+managedPageList.addEventListener("change",event=>{
+  if(!event.target.classList.contains("managed-page-radio"))return;
+  selectedManagedPage=managedPages.find(page=>pageKeyForPopup(page)===event.target.value)||null;
+  if(selectedManagedPage){chrome.storage.sync.set({pageSelected:selectedManagedPage});pageStatus.textContent=t("pg.selected",{name:selectedManagedPage.name});}
+});
+pageModeKeywordBtn.onclick=()=>setPageMode("keyword");
+pageModeDiscoverBtn.onclick=()=>setPageMode("discover");
+bindPromptPersistence("pageGroupAiPrompt",pageGroupAiPrompt);
+pageGroupAnswers.addEventListener("change",()=>chrome.storage.sync.set({pageGroupAnswers:pageGroupAnswers.value}));
+pageGroupAiEnabled.addEventListener("change",()=>chrome.storage.sync.set({pageGroupAiEnabled:pageGroupAiEnabled.checked}));
+pageGroupKeyword.addEventListener("change",()=>chrome.storage.sync.set({pageGroupKeyword:pageGroupKeyword.value}));
+pageGroupAiPrompt.addEventListener("change",()=>chrome.storage.sync.set({pageGroupAiPrompt:pageGroupAiPrompt.value}));
+async function pageBusyWithOtherRun(){
+  const keys=["isRunning","friendConfirmActive","isScraping","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"];
+  const state=await chrome.storage.local.get(keys);return keys.some(key=>!!state[key]);
+}
+pageGroupStartBtn.onclick=async()=>{
+  if(pageJoinRunning){pageJoinStatus.textContent=t("pg.alreadyRunning");return;}
+  if(!selectedManagedPage){pageJoinStatus.textContent=t("pg.needPage");return;}
+  const keyword=pageGroupKeyword.value.trim();
+  if(pageJoinMode==="keyword"&&!keyword){pageJoinStatus.textContent=t("pg.needKeyword");return;}
+  const target=Math.max(1,Math.min(100,parseInt(pageGroupTarget.value)||10));
+  const minDelay=Math.max(5,Math.min(3600,parseInt(pageGroupMinDelay.value)||15));
+  const maxDelay=Math.max(5,Math.min(3600,parseInt(pageGroupMaxDelay.value)||30));
+  if(minDelay>maxDelay){pageJoinStatus.textContent=t("pg.badDelay");return;}
+  if(await pageBusyWithOtherRun()){pageJoinStatus.textContent=t("pg.busyOther");return;}
+  const aiConfig=await getUnifiedAiConfig();
+  const runId=`page-group-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+  const cfg={page:selectedManagedPage,mode:pageJoinMode,keyword,target,minDelay,maxDelay,answers:pageGroupAnswers.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean),aiEnabled:!!pageGroupAiEnabled.checked,aiPrompt:pageGroupAiPrompt.value.trim(),aiConfig,runId};
+  const safeCfg={...cfg,aiConfig:{provider:aiConfig.provider,model:aiConfig.model,url:aiConfig.url}};
+  await chrome.storage.sync.set({pageSelected:selectedManagedPage,pageJoinMode,pageGroupKeyword:keyword,pageGroupTarget:target,pageGroupMinDelay:minDelay,pageGroupMaxDelay:maxDelay,pageGroupAnswers:pageGroupAnswers.value,pageGroupAiEnabled:cfg.aiEnabled,pageGroupAiPrompt:cfg.aiPrompt});
+  setPageRunning(true);
+  const targetUrl=pageJoinMode==="discover"?"https://www.facebook.com/groups/discover":"https://www.facebook.com/search/groups/?q="+encodeURIComponent(keyword);
+  const tab=await ensureTaskTab(targetUrl,pageJoinStatus,t("pg.openRoute"),url=>pageJoinMode==="discover"?/\/groups\/discover(?:\/|\?|$)/.test(url):/\/search\/groups(?:\/|\?|$)/.test(url)&&new URL(url).searchParams.get("q")===keyword,async owner=>{
+    await chrome.storage.local.set({pageGroupJoinActive:true,pageGroupJoinRunId:runId,pageGroupJoinOwnerTabId:owner.id,pageGroupJoinConfig:{...safeCfg,ownerTabId:owner.id},pageGroupJoinRunState:{active:true,runId,ownerTabId:owner.id,config:{...safeCfg,ownerTabId:owner.id},joined:0,skipped:0,attemptedKeys:[],nextAllowedAt:Date.now()+minDelay*1000,status:t("pg.starting")},pageGroupJoinJoined:0,pageGroupJoinSkipped:0,pageGroupJoinAttemptedKeys:[],pageGroupJoinNextAt:Date.now()+minDelay*1000,pageGroupJoinStatus:t("pg.starting")});
+  });
+  if(!tab){setPageRunning(false);await chrome.storage.local.set({pageGroupJoinActive:false});return;}
+  chrome.tabs.sendMessage(tab.id,{action:"startPageGroupJoin",config:cfg,ownerTabId:tab.id,nextAllowedAt:Date.now()+minDelay*1000,joined:0,skipped:0,attemptedKeys:[]},async result=>{
+    if(chrome.runtime.lastError){const retry=await autoReloadAndRetry(tab.id,{action:"startPageGroupJoin",config:cfg,ownerTabId:tab.id},pageJoinStatus);if(retry.ok||await runStillActive("pageGroupJoinActive")){pageJoinStatus.textContent=t("pg.running");return;}setPageRunning(false);pageJoinStatus.textContent=t("pg.startFail");return;}
+    if(result?.ok||await runStillActive("pageGroupJoinActive")){pageJoinStatus.textContent=t("pg.running");return;}
+    setPageRunning(false);pageJoinStatus.textContent=result?.error||t("pg.startFail");
+  });
+};
+pageGroupStopBtn.onclick=async()=>{
+  setPageRunning(false);
+  await chrome.storage.local.set({pageGroupJoinActive:false,pageGroupJoinStatus:t("pg.stopped")});
+  broadcastToFacebookTabs({action:"stopPageGroupJoin"});
+};
+pageGroupResetBtn.onclick=async()=>{
+  setPageRunning(false);
+  await chrome.storage.local.set({pageGroupJoinActive:false,pageGroupJoinJoined:0,pageGroupJoinSkipped:0,pageGroupJoinNextAt:0,pageGroupJoinStatus:t("pg.reset")});
+  broadcastToFacebookTabs({action:"resetPageGroupJoin"});
+};
+chrome.storage.sync.get(["pageSelected","pageJoinMode","pageGroupKeyword","pageGroupTarget","pageGroupMinDelay","pageGroupMaxDelay","pageGroupAnswers","pageGroupAiEnabled","pageGroupAiPrompt"],saved=>{
+  if(saved.pageSelected)selectedManagedPage=saved.pageSelected;
+  if(saved.pageJoinMode)setPageMode(saved.pageJoinMode);
+  if(saved.pageGroupKeyword!==undefined)pageGroupKeyword.value=saved.pageGroupKeyword;
+  if(saved.pageGroupTarget!==undefined)pageGroupTarget.value=saved.pageGroupTarget;
+  if(saved.pageGroupMinDelay!==undefined)pageGroupMinDelay.value=saved.pageGroupMinDelay;
+  if(saved.pageGroupMaxDelay!==undefined)pageGroupMaxDelay.value=saved.pageGroupMaxDelay;
+  if(saved.pageGroupAnswers!==undefined)pageGroupAnswers.value=saved.pageGroupAnswers;
+  if(saved.pageGroupAiEnabled!==undefined)pageGroupAiEnabled.checked=saved.pageGroupAiEnabled;
+  if(saved.pageGroupAiPrompt!==undefined)pageGroupAiPrompt.value=saved.pageGroupAiPrompt;
+});
+chrome.storage.local.get(["managedPages","pageGroupJoinStatus","pageGroupJoinJoined","pageGroupJoinSkipped","pageGroupJoinActive"],saved=>{
+  if(saved.managedPages)renderManagedPages(saved.managedPages,pageKeyForPopup(selectedManagedPage));
+  if(saved.pageGroupJoinStatus)pageJoinStatus.textContent=saved.pageGroupJoinStatus;
+  pageGroupCount.textContent=`${saved.pageGroupJoinJoined||0} / ${pageGroupTarget.value||0}`;
+  if(saved.pageGroupJoinActive)setPageRunning(true);
+});
+chrome.storage.onChanged.addListener((changes,area)=>{
+  if(area!=="local")return;
+  if(changes.pageGroupJoinStatus)pageJoinStatus.textContent=changes.pageGroupJoinStatus.newValue||"";
+  if(changes.pageGroupJoinJoined||changes.pageGroupJoinSkipped)chrome.storage.local.get(["pageGroupJoinJoined","pageGroupJoinSkipped"],r=>{pageGroupCount.textContent=`${r.pageGroupJoinJoined||0} / ${pageGroupTarget.value||0} (bỏ qua ${r.pageGroupJoinSkipped||0})`;});
+  if(changes.pageGroupJoinActive)setPageRunning(!!changes.pageGroupJoinActive.newValue);
+});
+
+// Page Care: group posts, followed Pages and Page Comment AI. These handlers
+// only use page* state and message names; personal Comment AI remains in feed.js.
+const pageGroupPostLinks=$("pageGroupPostLinks"),pageGroupPostTarget=$("pageGroupPostTarget"),pageGroupPostMinDelay=$("pageGroupPostMinDelay"),pageGroupPostMaxDelay=$("pageGroupPostMaxDelay"),pageGroupPostPrompt=$("pageGroupPostPrompt");
+const pageGroupPostStartBtn=$("pageGroupPostStartBtn"),pageGroupPostStopBtn=$("pageGroupPostStopBtn"),pageGroupPostResetBtn=$("pageGroupPostResetBtn"),pageGroupPostStatus=$("pageGroupPostStatus"),pageGroupPostCount=$("pageGroupPostCount");
+const pageWatchKeyword=$("pageWatchKeyword"),pageWatchTarget=$("pageWatchTarget"),pageWatchMinFollowers=$("pageWatchMinFollowers"),pageWatchExclude=$("pageWatchExclude");
+const pageWatchStartBtn=$("pageWatchStartBtn"),pageWatchStopBtn=$("pageWatchStopBtn"),pageWatchResetBtn=$("pageWatchResetBtn"),pageWatchStatus=$("pageWatchStatus"),pageWatchCount=$("pageWatchCount");
+const pageCommentSource=$("pageCommentSource"),pageCommentTarget=$("pageCommentTarget"),pageCommentMinDelay=$("pageCommentMinDelay"),pageCommentMaxDelay=$("pageCommentMaxDelay"),pageCommentPrompt=$("pageCommentPrompt");
+const pageCommentStartBtn=$("pageCommentStartBtn"),pageCommentStopBtn=$("pageCommentStopBtn"),pageCommentResetBtn=$("pageCommentResetBtn"),pageCommentStatus=$("pageCommentStatus"),pageCommentCount=$("pageCommentCount");
+let pagePostRunning=false,pageWatchRunning=false,pageCommentRunning=false;
+function setPagePostRunning(value){pagePostRunning=!!value;pageGroupPostStartBtn.textContent=pagePostRunning?t("pgp.running"):t("pgp.start");pageGroupPostStartBtn.classList.toggle("running",pagePostRunning);}
+function setPageWatchRunning(value){pageWatchRunning=!!value;pageWatchStartBtn.textContent=pageWatchRunning?t("pgw.running"):t("pgw.start");pageWatchStartBtn.classList.toggle("running",pageWatchRunning);}
+function setPageCommentRunning(value){pageCommentRunning=!!value;pageCommentStartBtn.textContent=pageCommentRunning?t("pgc.running"):t("pgc.start");pageCommentStartBtn.classList.toggle("running",pageCommentRunning);}
+function pageParseLines(value){return String(value||"").split(/\r?\n/).map(line=>line.trim()).filter(Boolean).map(line=>{const [url,...nameParts]=line.split("|");return {url:canonicalFacebookUrl(url.trim()),name:nameParts.join("|").trim()};}).filter(row=>row.url);}
+function canonicalFacebookUrl(value){try{const u=new URL(String(value||""));if(!(u.hostname==="facebook.com"||u.hostname.endsWith(".facebook.com")))return "";u.hash="";["ref","refid","__tn__","__cft__","mibextid","locale"].forEach(k=>u.searchParams.delete(k));return u.toString().replace(/\/$/,"");}catch{return "";}}
+function pageGroupKeyFromUrl(value){try{const u=new URL(value);const m=u.pathname.match(/^\/groups\/([^/?#]+)/i);return m?`/groups/${String(m[1]).toLowerCase()}`:"";}catch{return "";}}
+async function pageGroupPostTargets(){
+  const explicit=pageParseLines(pageGroupPostLinks.value).map(row=>({...row,key:pageGroupKeyFromUrl(row.url)})).filter(row=>row.key);
+  if(explicit.length)return explicit;
+  const selectedKey=pageKeyForPopup(selectedManagedPage),stored=await chrome.storage.local.get("pageGroupJoinHistory"),rows=Array.isArray(stored.pageGroupJoinHistory)?stored.pageGroupJoinHistory:[];
+  const seen=new Set();return rows.filter(row=>row.status==="confirmed"&&(!selectedKey||row.pageKey===selectedKey)&&row.groupKey&&!seen.has(row.groupKey)&&seen.add(row.groupKey)).map(row=>({key:row.groupKey,url:`https://www.facebook.com${row.groupKey}/`,name:""}));
+}
+async function pageFeatureBusy(){
+  const state=await chrome.storage.local.get(["isRunning","friendConfirmActive","isScraping","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"]);
+  return Object.values(state).some(Boolean);
+}
+function pageStoreMessage(message){return new Promise(resolve=>chrome.runtime.sendMessage(message,response=>resolve(response||{ok:false})));}
+
+pageGroupPostPrompt.addEventListener("change",()=>chrome.storage.sync.set({pageGroupPostPrompt:pageGroupPostPrompt.value}));
+pageGroupPostLinks.addEventListener("change",()=>chrome.storage.sync.set({pageGroupPostLinks:pageGroupPostLinks.value}));
+pageGroupPostTarget.addEventListener("change",()=>chrome.storage.sync.set({pageGroupPostTarget:pageGroupPostTarget.value}));
+pageGroupPostMinDelay.addEventListener("change",()=>chrome.storage.sync.set({pageGroupPostMinDelay:pageGroupPostMinDelay.value}));
+pageGroupPostMaxDelay.addEventListener("change",()=>chrome.storage.sync.set({pageGroupPostMaxDelay:pageGroupPostMaxDelay.value}));
+pageWatchKeyword.addEventListener("change",()=>chrome.storage.sync.set({pageWatchKeyword:pageWatchKeyword.value}));
+pageWatchTarget.addEventListener("change",()=>chrome.storage.sync.set({pageWatchTarget:pageWatchTarget.value}));
+pageWatchMinFollowers.addEventListener("change",()=>chrome.storage.sync.set({pageWatchMinFollowers:pageWatchMinFollowers.value}));
+pageWatchExclude.addEventListener("change",()=>chrome.storage.sync.set({pageWatchExclude:pageWatchExclude.value}));
+pageCommentSource.addEventListener("change",()=>chrome.storage.sync.set({pageCommentSource:pageCommentSource.value}));
+pageCommentPrompt.addEventListener("change",()=>chrome.storage.sync.set({pageCommentPrompt:pageCommentPrompt.value}));
+pageCommentTarget.addEventListener("change",()=>chrome.storage.sync.set({pageCommentTarget:pageCommentTarget.value}));
+pageCommentMinDelay.addEventListener("change",()=>chrome.storage.sync.set({pageCommentMinDelay:pageCommentMinDelay.value}));
+pageCommentMaxDelay.addEventListener("change",()=>chrome.storage.sync.set({pageCommentMaxDelay:pageCommentMaxDelay.value}));
+
+pageGroupPostStartBtn.onclick=async()=>{
+  if(pagePostRunning){pageGroupPostStatus.textContent=t("pgp.busy");return;}
+  if(!selectedManagedPage){pageGroupPostStatus.textContent=t("pg.needPage");return;}
+  const groups=await pageGroupPostTargets();if(!groups.length){pageGroupPostStatus.textContent=t("pgp.groups");return;}
+  const target=Math.max(1,Math.min(groups.length,parseInt(pageGroupPostTarget.value)||groups.length)),minDelay=Math.max(5,Math.min(3600,parseInt(pageGroupPostMinDelay.value)||30)),maxDelay=Math.max(5,Math.min(3600,parseInt(pageGroupPostMaxDelay.value)||60));
+  if(minDelay>maxDelay){pageGroupPostStatus.textContent=t("pg.badDelay");return;}
+  if(await pageFeatureBusy()){pageGroupPostStatus.textContent=t("pg.busyOther");return;}
+  const aiConfig=await getUnifiedAiConfig(),runId=`page-post-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,cfg={page:selectedManagedPage,groups,target,minDelay,maxDelay,prompt:pageGroupPostPrompt.value.trim(),aiConfig,done:0,skipped:0,index:0,runId};
+  const safeCfg={...cfg,aiConfig:{provider:aiConfig.provider,model:aiConfig.model,url:aiConfig.url}};
+  await chrome.storage.sync.set({pageSelected:selectedManagedPage,pageGroupPostLinks:pageGroupPostLinks.value,pageGroupPostTarget:target,pageGroupPostMinDelay:minDelay,pageGroupPostMaxDelay:maxDelay,pageGroupPostPrompt:cfg.prompt});
+  setPagePostRunning(true);
+  const first=groups[0];
+  const tab=await ensureTaskTab(first.url,pageGroupPostStatus,t("pgp.running"),url=>pageGroupKeyFromUrl(url)===first.key,async owner=>{await chrome.storage.local.set({pageGroupPostActive:true,pageGroupPostRunId:runId,pageGroupPostOwnerTabId:owner.id,pageGroupPostConfig:{...safeCfg,ownerTabId:owner.id},pageGroupPostDone:0,pageGroupPostSkipped:0,pageGroupPostIndex:0,pageGroupPostStatus:t("pgp.running")});});
+  if(!tab){setPagePostRunning(false);await chrome.storage.local.set({pageGroupPostActive:false});return;}
+  chrome.tabs.sendMessage(tab.id,{action:"startPageGroupPost",config:cfg,runId,ownerTabId:tab.id},async response=>{if(chrome.runtime.lastError){const retry=await autoReloadAndRetry(tab.id,{action:"startPageGroupPost",config:cfg,runId,ownerTabId:tab.id},pageGroupPostStatus);if(retry.ok||await runStillActive("pageGroupPostActive")){pageGroupPostStatus.textContent=t("pgp.running");return;}setPagePostRunning(false);return;}if(response?.ok||await runStillActive("pageGroupPostActive"))pageGroupPostStatus.textContent=t("pgp.running");else{setPagePostRunning(false);pageGroupPostStatus.textContent=response?.error||t("pgp.busy");}});
+};
+pageGroupPostStopBtn.onclick=async()=>{setPagePostRunning(false);await chrome.storage.local.set({pageGroupPostActive:false,pageGroupPostStatus:t("pgp.stopped")});broadcastToFacebookTabs({action:"stopPageGroupPost"});};
+pageGroupPostResetBtn.onclick=async()=>{setPagePostRunning(false);await chrome.storage.local.set({pageGroupPostActive:false,pageGroupPostDone:0,pageGroupPostSkipped:0,pageGroupPostIndex:0,pageGroupPostStatus:t("pgp.resetStatus")});broadcastToFacebookTabs({action:"resetPageGroupPost"});};
+
+pageWatchStartBtn.onclick=async()=>{
+  if(pageWatchRunning){pageWatchStatus.textContent=t("pgw.busy");return;}
+  if(!selectedManagedPage){pageWatchStatus.textContent=t("pg.needPage");return;}
+  const keyword=pageWatchKeyword.value.trim();if(!keyword){pageWatchStatus.textContent=t("pg.needKeyword");return;}
+  if(await pageFeatureBusy()){pageWatchStatus.textContent=t("pg.busyOther");return;}
+  const target=Math.max(1,Math.min(100,parseInt(pageWatchTarget.value)||10)),runId=`page-watch-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,cfg={page:selectedManagedPage,keyword,target,minFollowers:Math.max(0,parseInt(pageWatchMinFollowers.value)||0),exclude:pageWatchExclude.value.trim(),runId,followed:0,skipped:0,seenKeys:[]};
+  await chrome.storage.sync.set({pageSelected:selectedManagedPage,pageWatchKeyword:keyword,pageWatchTarget:target,pageWatchMinFollowers:cfg.minFollowers,pageWatchExclude:cfg.exclude});
+  setPageWatchRunning(true);
+  const url=`https://www.facebook.com/search/pages/?q=${encodeURIComponent(keyword)}`;
+  const tab=await ensureTaskTab(url,pageWatchStatus,t("pgw.running"),value=>{try{const u=new URL(value);return /\/search\/pages(?:\/|$)/i.test(u.pathname)&&u.searchParams.get("q")===keyword;}catch{return false;}},async owner=>{await chrome.storage.local.set({pageWatchActive:true,pageWatchRunId:runId,pageWatchOwnerTabId:owner.id,pageWatchConfig:{...cfg,ownerTabId:owner.id},pageWatchFollowed:0,pageWatchSkipped:0,pageWatchIndex:0,pageWatchSeenKeys:[],pageWatchStatus:t("pgw.running")});});
+  if(!tab){setPageWatchRunning(false);await chrome.storage.local.set({pageWatchActive:false});return;}
+  chrome.tabs.sendMessage(tab.id,{action:"startPageWatch",config:cfg,runId,ownerTabId:tab.id},async response=>{if(chrome.runtime.lastError){const retry=await autoReloadAndRetry(tab.id,{action:"startPageWatch",config:cfg,runId,ownerTabId:tab.id},pageWatchStatus);if(retry.ok||await runStillActive("pageWatchActive")){pageWatchStatus.textContent=t("pgw.running");return;}setPageWatchRunning(false);return;}if(response?.ok||await runStillActive("pageWatchActive"))pageWatchStatus.textContent=t("pgw.running");else{setPageWatchRunning(false);pageWatchStatus.textContent=response?.error||t("pgw.busy");}});
+};
+pageWatchStopBtn.onclick=async()=>{setPageWatchRunning(false);await chrome.storage.local.set({pageWatchActive:false,pageWatchStatus:t("pgw.stopped")});broadcastToFacebookTabs({action:"stopPageWatch"});};
+pageWatchResetBtn.onclick=async()=>{setPageWatchRunning(false);await chrome.storage.local.set({pageWatchActive:false,pageWatchFollowed:0,pageWatchSkipped:0,pageWatchIndex:0,pageWatchSeenKeys:[],pageWatchStatus:t("pgw.resetStatus")});broadcastToFacebookTabs({action:"resetPageWatch"});};
+
+pageCommentStartBtn.onclick=async()=>{
+  if(pageCommentRunning){pageCommentStatus.textContent=t("pgc.busy");return;}
+  if(!selectedManagedPage){pageCommentStatus.textContent=t("pg.needPage");return;}
+  const source=pageCommentSource.value||"feed",stored=await chrome.storage.local.get("pageFollowedPages"),pages=Array.isArray(stored.pageFollowedPages)?stored.pageFollowedPages:[];
+  if(source==="followed"&&!pages.length){pageCommentStatus.textContent=t("pgw.hint");return;}
+  if(await pageFeatureBusy()){pageCommentStatus.textContent=t("pg.busyOther");return;}
+  const target=Math.max(1,Math.min(100,parseInt(pageCommentTarget.value)||10)),minDelay=Math.max(5,Math.min(3600,parseInt(pageCommentMinDelay.value)||20)),maxDelay=Math.max(5,Math.min(3600,parseInt(pageCommentMaxDelay.value)||45));
+  if(minDelay>maxDelay){pageCommentStatus.textContent=t("pg.badDelay");return;}
+  const aiConfig=await getUnifiedAiConfig(),runId=`page-comment-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,cfg={page:selectedManagedPage,source,pages,target,minDelay,maxDelay,prompt:pageCommentPrompt.value.trim(),aiConfig,done:0,pageIndex:0,runId};
+  const safeCfg={...cfg,aiConfig:{provider:aiConfig.provider,model:aiConfig.model,url:aiConfig.url}};
+  await chrome.storage.sync.set({pageSelected:selectedManagedPage,pageCommentSource:source,pageCommentTarget:target,pageCommentMinDelay:minDelay,pageCommentMaxDelay:maxDelay,pageCommentPrompt:cfg.prompt});
+  setPageCommentRunning(true);
+  const targetUrl=source==="feed"?"https://www.facebook.com/":pages[0].url;
+  const route=value=>source==="feed"?isPopupMainFeedUrl(value):canonicalFacebookUrl(value)?.replace(/\/$/,"")===canonicalFacebookUrl(pages[0].url)?.replace(/\/$/,"");
+  const tab=await ensureTaskTab(targetUrl,pageCommentStatus,t("pgc.running"),route,async owner=>{await chrome.storage.local.set({pageCommentActive:true,pageCommentRunId:runId,pageCommentOwnerTabId:owner.id,pageCommentConfig:{...safeCfg,ownerTabId:owner.id},pageCommentDone:0,pageCommentPageIndex:0,pageCommentStatus:t("pgc.running")});});
+  if(!tab){setPageCommentRunning(false);await chrome.storage.local.set({pageCommentActive:false});return;}
+  chrome.tabs.sendMessage(tab.id,{action:"startPageComment",config:cfg,runId,ownerTabId:tab.id},async response=>{if(chrome.runtime.lastError){const retry=await autoReloadAndRetry(tab.id,{action:"startPageComment",config:cfg,runId,ownerTabId:tab.id},pageCommentStatus);if(retry.ok||await runStillActive("pageCommentActive")){pageCommentStatus.textContent=t("pgc.running");return;}setPageCommentRunning(false);return;}if(response?.ok||await runStillActive("pageCommentActive"))pageCommentStatus.textContent=t("pgc.running");else{setPageCommentRunning(false);pageCommentStatus.textContent=response?.error||t("pgc.busy");}});
+};
+pageCommentStopBtn.onclick=async()=>{setPageCommentRunning(false);await chrome.storage.local.set({pageCommentActive:false,pageCommentStatus:t("pgc.stopped")});broadcastToFacebookTabs({action:"stopPageComment"});};
+pageCommentResetBtn.onclick=async()=>{setPageCommentRunning(false);await chrome.storage.local.set({pageCommentActive:false,pageCommentDone:0,pageCommentStatus:t("pgc.resetStatus")});broadcastToFacebookTabs({action:"resetPageComment"});};
+
+chrome.storage.sync.get(["pageGroupPostLinks","pageGroupPostTarget","pageGroupPostMinDelay","pageGroupPostMaxDelay","pageGroupPostPrompt","pageWatchKeyword","pageWatchTarget","pageWatchMinFollowers","pageWatchExclude","pageCommentSource","pageCommentTarget","pageCommentMinDelay","pageCommentMaxDelay","pageCommentPrompt"],saved=>{
+  if(saved.pageGroupPostLinks!==undefined)pageGroupPostLinks.value=saved.pageGroupPostLinks;
+  if(saved.pageGroupPostTarget!==undefined)pageGroupPostTarget.value=saved.pageGroupPostTarget;
+  if(saved.pageGroupPostMinDelay!==undefined)pageGroupPostMinDelay.value=saved.pageGroupPostMinDelay;
+  if(saved.pageGroupPostMaxDelay!==undefined)pageGroupPostMaxDelay.value=saved.pageGroupPostMaxDelay;
+  if(saved.pageGroupPostPrompt!==undefined)pageGroupPostPrompt.value=saved.pageGroupPostPrompt;
+  if(saved.pageWatchKeyword!==undefined)pageWatchKeyword.value=saved.pageWatchKeyword;
+  if(saved.pageWatchTarget!==undefined)pageWatchTarget.value=saved.pageWatchTarget;
+  if(saved.pageWatchMinFollowers!==undefined)pageWatchMinFollowers.value=saved.pageWatchMinFollowers;
+  if(saved.pageWatchExclude!==undefined)pageWatchExclude.value=saved.pageWatchExclude;
+  if(saved.pageCommentSource!==undefined)pageCommentSource.value=saved.pageCommentSource;
+  if(saved.pageCommentTarget!==undefined)pageCommentTarget.value=saved.pageCommentTarget;
+  if(saved.pageCommentMinDelay!==undefined)pageCommentMinDelay.value=saved.pageCommentMinDelay;
+  if(saved.pageCommentMaxDelay!==undefined)pageCommentMaxDelay.value=saved.pageCommentMaxDelay;
+  if(saved.pageCommentPrompt!==undefined)pageCommentPrompt.value=saved.pageCommentPrompt;
+});
+chrome.storage.local.get(["pageGroupPostActive","pageGroupPostStatus","pageGroupPostDone","pageGroupPostSkipped","pageGroupPostConfig","pageWatchActive","pageWatchStatus","pageWatchFollowed","pageWatchSkipped","pageWatchConfig","pageCommentActive","pageCommentStatus","pageCommentDone","pageCommentConfig"],saved=>{
+  if(saved.pageGroupPostStatus)pageGroupPostStatus.textContent=saved.pageGroupPostStatus;
+  pageGroupPostCount.textContent=`${saved.pageGroupPostDone||0} / ${saved.pageGroupPostConfig?.target||pageGroupPostTarget.value||0}`;
+  if(saved.pageWatchStatus)pageWatchStatus.textContent=saved.pageWatchStatus;
+  pageWatchCount.textContent=`${saved.pageWatchFollowed||0} / ${saved.pageWatchConfig?.target||pageWatchTarget.value||0} (bỏ qua ${saved.pageWatchSkipped||0})`;
+  if(saved.pageCommentStatus)pageCommentStatus.textContent=saved.pageCommentStatus;
+  pageCommentCount.textContent=`${saved.pageCommentDone||0} / ${saved.pageCommentConfig?.target||pageCommentTarget.value||0}`;
+  if(saved.pageGroupPostActive)setPagePostRunning(true);if(saved.pageWatchActive)setPageWatchRunning(true);if(saved.pageCommentActive)setPageCommentRunning(true);
+});
+chrome.storage.onChanged.addListener((changes,area)=>{
+  if(area!=="local")return;
+  if(changes.pageGroupPostStatus)pageGroupPostStatus.textContent=changes.pageGroupPostStatus.newValue||"";
+  if(changes.pageGroupPostDone||changes.pageGroupPostSkipped)chrome.storage.local.get(["pageGroupPostDone","pageGroupPostSkipped","pageGroupPostConfig"],r=>{pageGroupPostCount.textContent=`${r.pageGroupPostDone||0} / ${r.pageGroupPostConfig?.target||pageGroupPostTarget.value||0} (bỏ qua ${r.pageGroupPostSkipped||0})`;});
+  if(changes.pageWatchStatus)pageWatchStatus.textContent=changes.pageWatchStatus.newValue||"";
+  if(changes.pageWatchFollowed||changes.pageWatchSkipped)chrome.storage.local.get(["pageWatchFollowed","pageWatchSkipped","pageWatchConfig"],r=>{pageWatchCount.textContent=`${r.pageWatchFollowed||0} / ${r.pageWatchConfig?.target||pageWatchTarget.value||0} (bỏ qua ${r.pageWatchSkipped||0})`;});
+  if(changes.pageCommentStatus)pageCommentStatus.textContent=changes.pageCommentStatus.newValue||"";
+  if(changes.pageCommentDone)chrome.storage.local.get(["pageCommentDone","pageCommentConfig"],r=>{pageCommentCount.textContent=`${r.pageCommentDone||0} / ${r.pageCommentConfig?.target||pageCommentTarget.value||0}`;});
+  if(changes.pageGroupPostActive)setPagePostRunning(!!changes.pageGroupPostActive.newValue);
+  if(changes.pageWatchActive)setPageWatchRunning(!!changes.pageWatchActive.newValue);
+  if(changes.pageCommentActive)setPageCommentRunning(!!changes.pageCommentActive.newValue);
+});
+
 // GROUP - sub tabs
 const subTabSearch = $("subTabSearch");
 const subTabDiscover = $("subTabDiscover");
@@ -703,7 +983,7 @@ function setGroupRunning(v){
   groupStartBtn.classList.toggle("running", v);
 }
 groupStartBtn.onclick = async ()=>{
-  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);if(shareRun.groupShareActive||shareRun.salesPostActive||shareRun.trendLearnActive||shareRun.trendPostActive){groupStatus.textContent=t("p.shBusyJoin");return;}
+  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"]);if(Object.values(shareRun).some(Boolean)){groupStatus.textContent=(shareRun.pageGroupJoinActive||shareRun.pageGroupPostActive||shareRun.pageWatchActive||shareRun.pageCommentActive)?t("pg.busyOther"):t("p.shBusyJoin");return;}
   const crossRun=await chrome.storage.local.get(["isDiscoverJoining"]);
   if(crossRun.isDiscoverJoining){groupStatus.textContent=t("p.gjDiscoverBusy");return;}
   const keyword = groupKeyword.value.trim();
@@ -806,7 +1086,7 @@ function setDiscoverRunning(v){
   discoverStartBtn.classList.toggle("running", v);
 }
 discoverStartBtn.onclick = async ()=>{
-  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);if(shareRun.groupShareActive||shareRun.salesPostActive||shareRun.trendLearnActive||shareRun.trendPostActive){discoverStatus.textContent=t("p.shBusyJoin");return;}
+  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"]);if(Object.values(shareRun).some(Boolean)){discoverStatus.textContent=(shareRun.pageGroupJoinActive||shareRun.pageGroupPostActive||shareRun.pageWatchActive||shareRun.pageCommentActive)?t("pg.busyOther"):t("p.shBusyJoin");return;}
   const keywordRun=await chrome.storage.local.get(["isGroupJoining","groupJoinRunConfig"]);
   if(keywordRun.isGroupJoining){discoverStatus.textContent=keywordRun.groupJoinRunConfig?.keyword?t("p.gdKeywordBusyKw",{kw:keywordRun.groupJoinRunConfig.keyword}):t("p.gdKeywordBusy");return;}
   const aiSaved=await getUnifiedAiConfig();
@@ -894,7 +1174,7 @@ const feedCountEl = $("feedCount");
 let isFeedInteracting=false;
 function setFeedRunning(v){ isFeedInteracting=v; feedStartBtn.textContent=v?t("p.fdBusy"):t("fd.start"); feedStartBtn.classList.toggle("running",v); }
 feedStartBtn.onclick = async ()=>{
-  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);if(shareRun.groupShareActive||shareRun.salesPostActive||shareRun.trendLearnActive||shareRun.trendPostActive){feedStatus.textContent=t("p.shBusyFeed");return;}
+  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"]);if(Object.values(shareRun).some(Boolean)){feedStatus.textContent=(shareRun.pageGroupJoinActive||shareRun.pageGroupPostActive||shareRun.pageWatchActive||shareRun.pageCommentActive)?t("pg.busyOther"):t("p.shBusyFeed");return;}
   const cfg={ reaction: feedReaction.value, target: parseInt(feedTarget.value)||20, minDelay: parseInt(feedMinDelay.value)||3, maxDelay: parseInt(feedMaxDelay.value)||8 };
   if(cfg.minDelay>cfg.maxDelay){ feedStatus.textContent=t("p.delayBad"); return; }
   chrome.storage.sync.set({ feedReaction:cfg.reaction, feedTarget:cfg.target, feedMinDelay:cfg.minDelay, feedMaxDelay:cfg.maxDelay });
@@ -1008,7 +1288,7 @@ selectKeywordGroupsBtn.onclick=()=>{
 };
 groupInteractKeyword.addEventListener("input",()=>{if(!groupInteractKeyword.value.trim())joinedGroupList.querySelectorAll('label[data-group-name]').forEach(row=>row.style.display="flex");});
 groupInteractStartBtn.onclick=async()=>{
-  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);if(shareRun.groupShareActive||shareRun.salesPostActive||shareRun.trendLearnActive||shareRun.trendPostActive){groupInteractStatus.textContent=t("p.shBusyInteract");return;}
+  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"]);if(Object.values(shareRun).some(Boolean)){groupInteractStatus.textContent=(shareRun.pageGroupJoinActive||shareRun.pageGroupPostActive||shareRun.pageWatchActive||shareRun.pageCommentActive)?t("pg.busyOther"):t("p.shBusyInteract");return;}
   const ids=[...joinedGroupList.querySelectorAll('.joined-group-check:checked')].map(b=>b.value);
   const selectedGroups=joinedGroups.filter(g=>ids.includes(g.id));
   const requestedGroups=Math.max(1,parseInt(groupInteractGroupLimit.value)||1);
@@ -1151,7 +1431,7 @@ groupPostPreviewBtn.onclick=async()=>{
 };
 groupPostStartBtn.onclick=async()=>{
   if(isGroupPostRunning){groupPostStatus.textContent=t("p.gpBusy");return;}
-  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);if(shareRun.groupShareActive||shareRun.salesPostActive||shareRun.trendLearnActive||shareRun.trendPostActive){groupPostStatus.textContent=t("p.shBusyPost");return;}
+  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"]);if(Object.values(shareRun).some(Boolean)){groupPostStatus.textContent=(shareRun.pageGroupJoinActive||shareRun.pageGroupPostActive||shareRun.pageWatchActive||shareRun.pageCommentActive)?t("pg.busyOther"):t("p.shBusyPost");return;}
   const selectedGroups=selectedPostGroups();
   const requestedGroups=Math.max(1,parseInt(groupPostTargetGroups.value)||1);
   const groups=selectedGroups.slice(0,Math.min(requestedGroups,selectedGroups.length));
@@ -1275,7 +1555,7 @@ groupShareStartBtn.onclick=async()=>{
   const interGroupDelay=Math.min(3600,Math.max(5,parseInt(groupShareInterDelay.value)||30)),aiConfig=await getUnifiedAiConfig();
   if(!aiConfig.key){groupShareStatus.textContent=t("p.shNeedLeadKey");return;}
   if(!aiConfig.model){groupShareStatus.textContent=t("p.shNeedLeadModel");return;}
-  const running=await chrome.storage.local.get(["groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive","groupInteractActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","isRunning","friendConfirmActive","isScraping"]);
+  const running=await chrome.storage.local.get(["groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","groupInteractActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","isRunning","friendConfirmActive","isScraping"]);
   if(Object.entries(running).some(([key,value])=>key!=="groupShareActive"&&!!value)){groupShareStatus.textContent=t("p.shBusyOther");return;}
   if(running.groupShareActive){groupShareStatus.textContent=t("p.shBusySelf");return;}
   const draftUrl=shareComparableUrl(groupShareSourceUrl.value),storedDraftUrl=shareComparableUrl(shareAiSourceUrl),typedSource=groupShareSourceText.value.replace(/\s+/g," ").trim();
@@ -1439,18 +1719,24 @@ aiModel.addEventListener("change",()=>{aiCustomModel.classList.toggle("hidden",a
 bindPromptPersistence("aiPrompt",aiPrompt);
 
 // ĐĂNG BÀI BÁN HÀNG - state và tiến trình tách riêng với Đăng bài AI/Share bài
-const salesSourceText=$("salesSourceText"),salesProductInfo=$("salesProductInfo"),salesMediaInput=$("salesMediaInput"),salesMediaPreview=$("salesMediaPreview"),salesClearMediaBtn=$("salesClearMediaBtn");
+const salesSourceText=$("salesSourceText"),salesProductInfo=$("salesProductInfo"),salesMediaInput=$("salesMediaInput"),salesMediaPreview=$("salesMediaPreview"),salesClearMediaBtn=$("salesClearMediaBtn"),salesMediaMode=$("salesMediaMode"),salesMediaPerGroup=$("salesMediaPerGroup");
 const salesPrompt=$("salesPrompt"),salesStyleProfile=$("salesStyleProfile"),salesPostTargetGroups=$("salesPostTargetGroups"),salesPostInterDelay=$("salesPostInterDelay");
 const salesPreviewBtn=$("salesPreviewBtn"),salesAiTestBtn=$("salesAiTestBtn"),salesPreview=$("salesPreview"),salesStartBtn=$("salesStartBtn"),salesStopBtn=$("salesStopBtn"),salesResetBtn=$("salesResetBtn");
 const salesAiChatInput=$("salesAiChatInput"),salesAiChatTranscript=$("salesAiChatTranscript"),salesAiChatActivity=$("salesAiChatActivity"),salesAiChatBtn=$("salesAiChatBtn"),salesAiChatClearBtn=$("salesAiChatClearBtn"),salesAiChatUseLastBtn=$("salesAiChatUseLastBtn");
 const salesPostStatus=$("salesPostStatus"),salesPostCount=$("salesPostCount"),salesAiSummary=$("salesAiSummary"),salesGroupKeyword=$("salesGroupKeyword"),salesGroupList=$("salesGroupList"),loadSalesGroupsBtn=$("loadSalesGroupsBtn"),selectAllSalesGroupsBtn=$("selectAllSalesGroupsBtn");
 let salesGroups=[];
 let salesIsRunning=false;
+let salesSelectedMediaCount=0;
+let salesMediaLoaded=false;
 let salesAiMessages=[],salesAiAcceptedPosts=[],salesAiChatContextKey="";
 function setSalesRunning(value){
   salesIsRunning=!!value;
   salesStartBtn.innerHTML=salesIsRunning?"⏳ Đang đăng bài bán hàng...":"▶ Tạo và đăng bài bán hàng";
   salesStartBtn.classList.toggle("running",salesIsRunning);
+  salesMediaInput.disabled=salesIsRunning;
+  salesClearMediaBtn.disabled=salesIsRunning;
+  salesMediaMode.disabled=salesIsRunning;
+  updateSalesMediaRandomUi();
   setPromptEditorState(salesIsRunning,salesPrompt,"salesPromptLockHint");
 }
 function salesEsc(value){return String(value||"").replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));}
@@ -1504,8 +1790,10 @@ function salesAiConfig(){return getUnifiedAiConfig();}
 async function refreshSalesAiSummary(){const c=await salesAiConfig();salesAiSummary.textContent=c.key?`Đang dùng ${c.provider} • ${c.model||"chưa chọn model"} • API Key đã lưu`:`Chưa có API Key dùng chung. Hãy cấu hình ở tab Nhóm hoặc Bản tin & AI.`;}
 function persistSalesDraft(){
   const target=Math.max(1,Math.min(500,parseInt(salesPostTargetGroups.value)||1)),delay=Math.min(3600,Math.max(5,parseInt(salesPostInterDelay.value)||45));
-  salesPostTargetGroups.value=target;salesPostInterDelay.value=delay;
-  return chrome.storage.sync.set({salesSourceText:salesSourceText.value,salesProductInfo:salesProductInfo.value,salesPrompt:salesPrompt.value,salesPostTargetGroups:target,salesPostInterDelay:delay,salesStyleProfile:salesStyleProfile.value});
+  const perGroup=normalizeSalesMediaPerGroup(salesMediaPerGroup.value,salesMediaLoaded?(salesSelectedMediaCount||1):20);
+  salesPostTargetGroups.value=target;salesPostInterDelay.value=delay;salesMediaPerGroup.value=perGroup;
+  const randomMedia=salesMediaMode.value==="random";
+  return chrome.storage.sync.set({salesSourceText:salesSourceText.value,salesProductInfo:salesProductInfo.value,salesPrompt:salesPrompt.value,salesPostTargetGroups:target,salesPostInterDelay:delay,salesStyleProfile:salesStyleProfile.value,salesMediaMode:salesMediaMode.value,salesMediaRandom:randomMedia,salesMediaPerGroup:perGroup});
 }
 bindPromptPersistence("salesPrompt",salesPrompt);
 [salesSourceText,salesProductInfo,salesPostTargetGroups,salesPostInterDelay,salesStyleProfile].forEach(el=>el.addEventListener("change",persistSalesDraft));
@@ -1542,18 +1830,58 @@ function salesMediaList(value){
   const raw=Array.isArray(value)?value:(value?[value]:[]);
   return raw.filter(item=>item&&typeof item==="object"&&item.dataUrl&&/^(image|video)\//i.test(String(item.type||"")));
 }
+function normalizeSalesMediaPerGroup(value,available){
+  const max=Math.max(1,Math.min(20,Number(available)||1));
+  return Math.max(1,Math.min(max,parseInt(value)||1));
+}
+function updateSalesMediaRandomUi(){
+  if(!salesMediaMode||!salesMediaPerGroup)return;
+  const mediaCount=salesSelectedMediaCount;
+  const max=Math.max(1,Math.min(20,salesMediaLoaded?(mediaCount||1):20));
+  salesMediaPerGroup.max=max;
+  if(salesMediaLoaded)salesMediaPerGroup.value=normalizeSalesMediaPerGroup(salesMediaPerGroup.value,mediaCount||1);
+  salesMediaPerGroup.disabled=salesIsRunning||salesMediaMode.value!=="random"||!mediaCount;
+}
+function shuffleSalesMediaIndices(size){
+  const values=Array.from({length:Math.max(0,Number(size)||0)},(_,index)=>index);
+  for(let index=values.length-1;index>0;index--){const swap=Math.floor(Math.random()*(index+1));[values[index],values[swap]]=[values[swap],values[index]];}
+  return values;
+}
+function buildSalesMediaPlan(mediaCount,groupCount,perGroup){
+  const total=Math.max(0,Number(mediaCount)||0),groups=Math.max(0,Number(groupCount)||0),take=normalizeSalesMediaPerGroup(perGroup,total||1),plan=[];
+  const signature=values=>[...values].sort((a,b)=>a-b).join(",");
+  let previous="";
+  for(let index=0;index<groups;index++){
+    let selected=shuffleSalesMediaIndices(total).slice(0,take);
+    if(previous&&signature(selected)===previous){
+      if(take<total){
+        const replacement=shuffleSalesMediaIndices(total).find(value=>!selected.includes(value));
+        if(replacement!==undefined)selected[take-1]=replacement;
+      }else if(selected.length>1){
+        selected=[...selected.slice(1),selected[0]];
+      }
+    }
+    plan.push(selected);previous=signature(selected);
+  }
+  return plan;
+}
 function salesMediaSize(bytes){
   const value=Number(bytes)||0;
   return `${Math.round(value/1024/1024*10)/10} MB`;
 }
 function renderSalesMediaPreview(value){
   const media=salesMediaList(value);
-  if(!media.length){salesMediaPreview.textContent=t("sales.mediaNone");return;}
+  salesMediaLoaded=true;
+  salesSelectedMediaCount=media.length;
+  if(!media.length){salesMediaPreview.textContent=t("sales.mediaNone");updateSalesMediaRandomUi();return;}
   const names=media.map(item=>`${item.name||"media"} (${salesMediaSize(item.size)})`).join(", ");
   salesMediaPreview.textContent=t("sales.mediaSelected",{n:media.length,names});
+  updateSalesMediaRandomUi();
 }
 async function clearSalesMedia(){salesMediaInput.value="";await chrome.storage.local.remove("salesPostMedia");renderSalesMediaPreview([]);}
 salesClearMediaBtn.onclick=clearSalesMedia;
+salesMediaMode.addEventListener("change",()=>{updateSalesMediaRandomUi();persistSalesDraft();});
+salesMediaPerGroup.addEventListener("change",()=>{updateSalesMediaRandomUi();persistSalesDraft();});
 salesMediaInput.onchange=async()=>{
   const files=[...(salesMediaInput.files||[])];
   if(!files.length){await chrome.storage.local.remove("salesPostMedia");renderSalesMediaPreview([]);return;}
@@ -1562,6 +1890,7 @@ salesMediaInput.onchange=async()=>{
   if(invalid){
     salesMediaInput.value="";
     await chrome.storage.local.remove("salesPostMedia");
+    salesSelectedMediaCount=0;updateSalesMediaRandomUi();
     salesMediaPreview.textContent=!/^(image|video)\//i.test(String(invalid.type||""))?t("sales.mediaTypeError",{name:invalid.name||"file"}):t("sales.mediaSizeError",{name:invalid.name||"file"});
     return;
   }
@@ -1586,9 +1915,9 @@ async function buildSalesConfig(){
   if(!groups.length)throw new Error("Hãy tích chọn ít nhất một nhóm");
   if(!prompt.includes("{groupName}")||!prompt.includes("{sourceText}")||!prompt.includes("{productInfo}"))throw new Error("Prompt phải có {groupName}, {sourceText} và {productInfo}");
   if(!aiConfig.key||!aiConfig.model)throw new Error("Chưa có API Key/Model AI dùng chung");
-  const media=salesMediaList((await chrome.storage.local.get("salesPostMedia")).salesPostMedia);
+  const media=salesMediaList((await chrome.storage.local.get("salesPostMedia")).salesPostMedia).slice(0,20),randomMedia=salesMediaMode.value==="random"&&media.length>0,perGroup=normalizeSalesMediaPerGroup(salesMediaPerGroup.value,media.length||1),plan=randomMedia?buildSalesMediaPlan(media.length,groups.length,perGroup):[];
   const contextKey=salesChatContextFingerprint(),acceptedChatPosts=salesAiChatContextKey===contextKey?salesAiAcceptedPosts.slice(0,groups.length):[];
-  return {groups,sourceText:source,productInfo:info,prompt,interGroupDelay:Math.min(3600,Math.max(5,parseInt(salesPostInterDelay.value)||45)),aiConfig,styleProfileId:salesStyleProfile.value||"",acceptedChatPosts,media:{enabled:media.length>0,required:media.length>0,count:media.length}};
+  return {groups,sourceText:source,productInfo:info,prompt,interGroupDelay:Math.min(3600,Math.max(5,parseInt(salesPostInterDelay.value)||45)),aiConfig,styleProfileId:salesStyleProfile.value||"",acceptedChatPosts,media:{enabled:media.length>0,required:media.length>0,count:media.length,random:randomMedia,perGroup,plan,manifest:media.map(item=>({name:String(item.name||"media"),type:String(item.type||""),size:Number(item.size)||0}))}};
 }
 salesPreviewBtn.onclick=async()=>{
   salesPreviewBtn.disabled=true;salesPostStatus.textContent="AI đang tạo bài thử — chưa đăng lên Facebook";
@@ -1599,22 +1928,22 @@ salesStartBtn.onclick=async()=>{
   if(salesIsRunning)return;
   setSalesRunning(true);
   try{
-    const other=await chrome.storage.local.get(["groupPostActive","groupShareActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","isRunning","friendConfirmActive","isScraping","salesPostActive","trendLearnActive","trendPostActive"]);
+    const other=await chrome.storage.local.get(["groupPostActive","groupShareActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","isRunning","friendConfirmActive","isScraping","salesPostActive","trendLearnActive","trendPostActive"]);
     if(Object.entries(other).some(([key,value])=>key!=="salesPostActive"&&!!value))throw new Error("Một tính năng Facebook khác đang chạy; hãy dừng trước khi đăng bán hàng");
     if(other.salesPostActive)throw new Error("Một phiên đăng bán hàng đang chạy");
     const cfg=await buildSalesConfig(),tab=await getActiveTab();if(!tab)throw new Error("Không tìm thấy tab Facebook");
     // Không ghi API key vào chrome.storage.local; background đọc key từ unified sync config.
     const runtimeCfg={...cfg,aiConfig:{provider:cfg.aiConfig.provider,model:cfg.aiConfig.model,url:cfg.aiConfig.url}};
     const runId=`sales-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-    await persistSalesDraft();await chrome.storage.local.set({salesPostConfig:runtimeCfg,salesPostRunId:runId,salesPostOwnerTabId:tab.id,salesPostActive:true,salesPostIndex:0,salesPostDone:0,salesPostSkipped:0,salesPostTotal:cfg.groups.length,salesPostNextAt:0,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:`Đang chuẩn bị đăng lên ${cfg.groups.length} nhóm...`});
+    await persistSalesDraft();await chrome.storage.local.set({salesPostConfig:runtimeCfg,salesPostRunId:runId,salesPostOwnerTabId:tab.id,salesPostActive:true,salesPostIndex:0,salesPostDone:0,salesPostSkipped:0,salesPostTotal:cfg.groups.length,salesPostNextAt:0,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostProofSeenAt:0,salesPostProofMethod:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:`Đang chuẩn bị đăng lên ${cfg.groups.length} nhóm...`});
     salesPostStatus.textContent=`Đang chuẩn bị đăng lên ${cfg.groups.length} nhóm...`;
     if(!tab.url?.includes("facebook.com/groups/")){await chrome.tabs.update(tab.id,{url:cfg.groups[0].url});await new Promise(r=>setTimeout(r,4500));}
     chrome.tabs.sendMessage(tab.id,{action:"startSalesPost",runId,config:runtimeCfg},async res=>{if(chrome.runtime.lastError){const retry=await autoReloadAndRetry(tab.id,{action:"startSalesPost",runId,config:runtimeCfg},salesPostStatus);if(!retry.ok)salesPostStatus.textContent="Không kết nối được với trang Facebook";}else if(!res?.ok){salesPostStatus.textContent=res?.error||"Không khởi động được đăng bán hàng";}});
   }catch(error){setSalesRunning(false);salesPostStatus.textContent=error.message;}
 };
-salesStopBtn.onclick=async()=>{setSalesRunning(false);await chrome.storage.local.set({salesPostActive:false,salesPostNextAt:0,salesPostStage:"",salesPostStatus:"Đã dừng đăng bài bán hàng"});broadcastToFacebookTabs({action:"stopSalesPost"});const tab=await getActiveTab();if(tab?.url?.includes("facebook.com"))chrome.tabs.sendMessage(tab.id,{action:"stopSalesPost"});};
-salesResetBtn.onclick=async()=>{setSalesRunning(false);const tab=await getActiveTab();if(tab?.url?.includes("facebook.com"))chrome.tabs.sendMessage(tab.id,{action:"resetSalesPost"});await chrome.storage.local.set({salesPostActive:false,salesPostRunId:"",salesPostOwnerTabId:0,salesPostConfig:null,salesPostIndex:0,salesPostDone:0,salesPostSkipped:0,salesPostTotal:0,salesPostNextAt:0,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:"Đã reset tiến trình đăng bán hàng"});broadcastToFacebookTabs({action:"resetSalesPost"});};
-chrome.storage.sync.get(["salesSourceText","salesProductInfo","salesPrompt","salesPostTargetGroups","salesPostInterDelay","salesStyleProfile"],r=>{if(r.salesSourceText!==undefined)salesSourceText.value=r.salesSourceText;if(r.salesProductInfo!==undefined)salesProductInfo.value=r.salesProductInfo;if(r.salesPrompt!==undefined)salesPrompt.value=r.salesPrompt;if(r.salesPostTargetGroups!==undefined)salesPostTargetGroups.value=r.salesPostTargetGroups;if(r.salesPostInterDelay!==undefined)salesPostInterDelay.value=r.salesPostInterDelay;if(r.salesStyleProfile!==undefined)salesStyleProfile.value=r.salesStyleProfile;restoreSalesAiChat();});
+salesStopBtn.onclick=async()=>{setSalesRunning(false);await chrome.storage.local.set({salesPostActive:false,salesPostNextAt:0,salesPostStage:"",salesPostProofSeenAt:0,salesPostProofMethod:"",salesPostStatus:"Đã dừng đăng bài bán hàng"});broadcastToFacebookTabs({action:"stopSalesPost"});const tab=await getActiveTab();if(tab?.url?.includes("facebook.com"))chrome.tabs.sendMessage(tab.id,{action:"stopSalesPost"});};
+salesResetBtn.onclick=async()=>{setSalesRunning(false);const tab=await getActiveTab();if(tab?.url?.includes("facebook.com"))chrome.tabs.sendMessage(tab.id,{action:"resetSalesPost"});await chrome.storage.local.set({salesPostActive:false,salesPostRunId:"",salesPostOwnerTabId:0,salesPostConfig:null,salesPostIndex:0,salesPostDone:0,salesPostSkipped:0,salesPostTotal:0,salesPostNextAt:0,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostProofSeenAt:0,salesPostProofMethod:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:"Đã reset tiến trình đăng bán hàng"});broadcastToFacebookTabs({action:"resetSalesPost"});};
+chrome.storage.sync.get(["salesSourceText","salesProductInfo","salesPrompt","salesPostTargetGroups","salesPostInterDelay","salesStyleProfile","salesMediaMode","salesMediaRandom","salesMediaPerGroup"],r=>{if(r.salesSourceText!==undefined)salesSourceText.value=r.salesSourceText;if(r.salesProductInfo!==undefined)salesProductInfo.value=r.salesProductInfo;if(r.salesPrompt!==undefined)salesPrompt.value=r.salesPrompt;if(r.salesPostTargetGroups!==undefined)salesPostTargetGroups.value=r.salesPostTargetGroups;if(r.salesPostInterDelay!==undefined)salesPostInterDelay.value=r.salesPostInterDelay;if(r.salesStyleProfile!==undefined)salesStyleProfile.value=r.salesStyleProfile;salesMediaMode.value=r.salesMediaMode==="random"||r.salesMediaMode==="all"?r.salesMediaMode:(r.salesMediaRandom?"random":"all");if(r.salesMediaPerGroup!==undefined)salesMediaPerGroup.value=r.salesMediaPerGroup;updateSalesMediaRandomUi();restoreSalesAiChat();});
  chrome.storage.local.get(["joinedGroups","salesPostStatus","salesPostDone","salesPostSkipped","salesPostTotal","salesPostActive","salesPostMedia"],r=>{if(r.joinedGroups)renderSalesGroups(r.joinedGroups);if(r.salesPostStatus)salesPostStatus.textContent=r.salesPostStatus;salesPostCount.textContent=`${r.salesPostDone||0} / ${r.salesPostTotal||0} (bỏ qua ${r.salesPostSkipped||0})`;setSalesRunning(!!r.salesPostActive);renderSalesMediaPreview(r.salesPostMedia);});
 chrome.storage.onChanged.addListener((changes,area)=>{if(area!=="local")return;if(changes.salesPostStatus)salesPostStatus.textContent=changes.salesPostStatus.newValue||"";if(changes.salesPostActive)setSalesRunning(!!changes.salesPostActive.newValue);if(changes.salesPostDone||changes.salesPostSkipped||changes.salesPostTotal)chrome.storage.local.get(["salesPostDone","salesPostSkipped","salesPostTotal"],r=>salesPostCount.textContent=`${r.salesPostDone||0} / ${r.salesPostTotal||0} (bỏ qua ${r.salesPostSkipped||0})`);});
 refreshSalesAiSummary();
@@ -1625,8 +1954,8 @@ const trendSourceList=$("trendSourceList"),trendTargetList=$("trendTargetList");
 const trendSourceKeyword=$("trendSourceKeyword"),trendTargetKeyword=$("trendTargetKeyword");
 const trendSourceLinks=$("trendSourceLinks"),trendTargetLinks=$("trendTargetLinks");
 const loadTrendGroupsBtn=$("loadTrendGroupsBtn"),selectAllTrendSourceBtn=$("selectAllTrendSourceBtn"),selectAllTrendTargetBtn=$("selectAllTrendTargetBtn");
-const trendPerGroup=$("trendPerGroup"),trendPrompt=$("trendPrompt"),trendGroupPrompt=$("trendGroupPrompt"),trendStyleProfile=$("trendStyleProfile");
-const trendTargetGroups=$("trendTargetGroups"),trendPostsPerGroup=$("trendPostsPerGroup"),trendPostDelay=$("trendPostDelay"),trendPostSourceMode=$("trendPostSourceMode");
+const trendPerGroup=$("trendPerGroup"),trendPerGroupWrap=$("trendPerGroupWrap"),trendLearnUnlimited=$("trendLearnUnlimited"),trendPrompt=$("trendPrompt"),trendGroupPrompt=$("trendGroupPrompt"),trendStyleProfile=$("trendStyleProfile");
+const trendTargetGroups=$("trendTargetGroups"),trendPostsPerGroup=$("trendPostsPerGroup"),trendPostsPerGroupWrap=$("trendPostsPerGroupWrap"),trendPostDelay=$("trendPostDelay"),trendPostSourceMode=$("trendPostSourceMode"),trendDistributionModes=$("trendDistributionModes"),trendDistributionHint=$("trendDistributionHint"),trendPostPlan=$("trendPostPlan");
 const trendAnonymousEnabled=$("trendAnonymousEnabled");
 const trendBackgroundEnabled=$("trendBackgroundEnabled"),trendBackgroundOptions=$("trendBackgroundOptions"),trendBackgroundMode=$("trendBackgroundMode"),trendFixedColorWrap=$("trendFixedColorWrap"),trendFixedColor=$("trendFixedColor"),trendBackgroundMaxChars=$("trendBackgroundMaxChars");
 const trendLearnBtn=$("trendLearnBtn"),trendLearnStopBtn=$("trendLearnStopBtn"),trendLearnResetBtn=$("trendLearnResetBtn");
@@ -1645,6 +1974,10 @@ function trendLearnMode(){
   if(String(trendSourceLinks?.value||"").trim())return "links";
   return "target-selected";
 }
+function trendPostDistributionMode(){
+  const value=document.querySelector('.trend-distribution-mode:checked')?.value;
+  return ["auto","many-to-one","one-to-many","many-to-many"].includes(value)?value:"auto";
+}
 function trendLearnIdleLabel(){
   const mode=trendLearnMode();
   if(mode==="links")return t("trend2.learnLinksBtn");
@@ -1659,6 +1992,7 @@ function renderTrendGroups(groups){
   const html=trendGroups.length?trendGroups.map(g=>{const k=groupPostKey(g);return `<label data-name="${trendEsc(String(g.name||"").toLocaleLowerCase("vi"))}" style="display:flex;align-items:center;gap:7px;padding:5px;margin:0;border-bottom:1px solid #eee;min-width:0"><input class="trend-check" type="checkbox" value="${trendEsc(k)}" style="width:auto"><img src="${trendEsc(g.icon||"icon128.png")}" style="width:28px;height:28px;border-radius:50%;object-fit:cover"><span style="font-size:12px;overflow:hidden;text-overflow:ellipsis">${trendEsc(g.name)}</span></label>`;}).join(""):'<div class="hint" style="padding:6px">Chưa có danh sách nhóm</div>';
   if(trendSourceList)trendSourceList.innerHTML=html;
   if(trendTargetList)trendTargetList.innerHTML=html;
+  updateTrendPostPlan();
 }
 function selectedTrendGroups(listEl){
   if(!listEl)return [];
@@ -1762,7 +2096,7 @@ function renderTrendLearned(posts){
   const beforeSelected=trendPostSelectedIds.size;
   trendPostSelectedIds=new Set([...trendPostSelectedIds].filter(id=>available.has(id)));
   if(beforeSelected!==trendPostSelectedIds.size)chrome.storage.sync.set({trendPostSelectedIds:[...trendPostSelectedIds]}).catch(()=>{});
-  if(!rows.length){box.innerHTML='<div class="hint" style="padding:6px">Chưa học được bài nào</div>';updateTrendSelectedPostCount();return;}
+  if(!rows.length){box.innerHTML='<div class="hint" style="padding:6px">Chưa học được bài nào</div>';updateTrendSelectedPostCount();updateTrendPostPlan();return;}
   box.innerHTML=rows.slice(-50).reverse().map((p,i)=>{
     const postId=trendLearnedPostId(p),checked=postId&&trendPostSelectedIds.has(postId)?" checked":"";
     const src=trendEsc(p.sourceGroupName||"nhóm nguồn");
@@ -1773,6 +2107,7 @@ function renderTrendLearned(posts){
     return `<div style="display:flex;align-items:flex-start;gap:6px;padding:5px;border-bottom:1px solid #eee;font-size:12px"><label style="display:flex;align-items:flex-start;gap:6px;flex:1;cursor:pointer"><input class="trend-source-post-check" type="checkbox" data-post-id="${trendEsc(postId)}"${checked} style="width:auto;margin-top:2px"><span><b>${rows.length-i}. [${src}]</b> ${text}…${a}</span></label><button type="button" class="trend-delete-post-btn" data-post-id="${trendEsc(postId)}" title="${deleteTitle}" aria-label="${deleteTitle}" style="padding:2px 6px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6;font-size:11px">🗑</button></div>`;
   }).join("");
   updateTrendSelectedPostCount();
+  updateTrendPostPlan();
 }
 function renderTrendDiag(diag){
   const box=$("trendLearnedList");
@@ -1791,11 +2126,13 @@ function renderTrendDiag(diag){
 }
 async function refreshTrendAiSummary(){try{const c=await getUnifiedAiConfig();if(trendAiSummary)trendAiSummary.textContent=c.key?`Đang dùng ${c.provider} • ${c.model||"chưa chọn model"} • API Key đã lưu`:`Chưa có API Key dùng chung. Hãy cấu hình ở tab Nhóm.`;}catch{}}
 function persistTrendDraft(){
-  const per=Math.max(1,Math.min(30,parseInt(trendPerGroup.value)||10)),target=Math.max(1,Math.min(500,parseInt(trendTargetGroups.value)||3)),postsPerGroup=Math.max(1,Math.min(30,parseInt(trendPostsPerGroup?.value)||1)),postDelay=Math.min(3600,Math.max(5,parseInt(trendPostDelay?.value)||30));
+  const unlimited=trendLearnUnlimited?trendLearnUnlimited.checked:true;
+  const distributionMode=trendPostDistributionMode();
+  const per=Math.max(1,parseInt(trendPerGroup.value)||10),target=Math.max(1,Math.min(500,parseInt(trendTargetGroups.value)||3)),postsPerGroup=Math.max(1,Math.min(30,parseInt(trendPostsPerGroup?.value)||1)),postDelay=Math.min(3600,Math.max(5,parseInt(trendPostDelay?.value)||30));
   trendPerGroup.value=per;trendTargetGroups.value=target;if(trendPostsPerGroup)trendPostsPerGroup.value=postsPerGroup;if(trendPostDelay)trendPostDelay.value=postDelay;
   const background=readTrendBackgroundConfig();
   const learnMode=trendLearnMode();
-  return chrome.storage.sync.set({trendPerGroup:per,trendPrompt:trendPrompt.value,trendGroupPrompt:trendGroupPrompt?.value||"",trendSourceLinks:trendSourceLinks?.value||"",trendTargetLinks:trendTargetLinks?.value||"",trendStyleProfile:trendStyleProfile.value,trendTargetGroups:target,trendInterDelay:postDelay,trendPostsPerGroup:postsPerGroup,trendPostDelay:postDelay,trendPostSourceMode:trendPostSourceMode?.value==="sequential"?"sequential":"selected",trendPostSelectedIds:[...trendPostSelectedIds],trendLearnSourceMode:learnMode,trendLearnFromTarget:learnMode==="target-selected",trendAnonymousMode:!!(trendAnonymousEnabled&&trendAnonymousEnabled.checked),trendBackgroundEnabled:background.enabled,trendBackgroundMode:background.mode,trendBackgroundFixedColor:background.fixedColor,trendBackgroundColors:background.colors,trendBackgroundMaxChars:background.maxChars});
+  return chrome.storage.sync.set({trendPerGroup:per,trendLearnUnlimited:unlimited,trendPrompt:trendPrompt.value,trendGroupPrompt:trendGroupPrompt?.value||"",trendSourceLinks:trendSourceLinks?.value||"",trendTargetLinks:trendTargetLinks?.value||"",trendStyleProfile:trendStyleProfile.value,trendTargetGroups:target,trendInterDelay:postDelay,trendPostsPerGroup:postsPerGroup,trendPostDelay:postDelay,trendPostSourceMode:trendPostSourceMode?.value==="sequential"?"sequential":"selected",trendPostDistributionMode:distributionMode,trendPostSelectedIds:[...trendPostSelectedIds],trendLearnSourceMode:learnMode,trendLearnFromTarget:learnMode==="target-selected",trendAnonymousMode:!!(trendAnonymousEnabled&&trendAnonymousEnabled.checked),trendBackgroundEnabled:background.enabled,trendBackgroundMode:background.mode,trendBackgroundFixedColor:background.fixedColor,trendBackgroundColors:background.colors,trendBackgroundMaxChars:background.maxChars});
 }
 function applyTrendLearnMode(){
   const linksMode=trendLearnMode()==="links";
@@ -1805,11 +2142,26 @@ function applyTrendLearnMode(){
   if(trendSourceLinks){trendSourceLinks.disabled=!linksMode;trendSourceLinks.style.opacity=linksMode?"1":".65";}
   if(trendLearnBtn)trendLearnBtn.innerHTML=trendLearnRunning?"⏳ Đang học bài...":trendLearnIdleLabel();
 }
+function toggleTrendLearnLimit(){
+  if(trendPerGroupWrap)trendPerGroupWrap.style.display=trendLearnUnlimited?.checked?"none":"";
+}
+toggleTrendLearnLimit();
+toggleTrendPostDistributionUI();
 if(trendLearnSourceMode)trendLearnSourceMode.addEventListener("change",()=>{applyTrendLearnMode();persistTrendDraft();});
 if(trendSourceLinks)trendSourceLinks.addEventListener("input",()=>{if(trendLearnMode()==="links")applyTrendLearnMode();});
 if(typeof bindPromptPersistence==="function")bindPromptPersistence("trendPrompt",trendPrompt);
 if(typeof bindPromptPersistence==="function")bindPromptPersistence("trendGroupPrompt",trendGroupPrompt);
-[trendSourceLinks,trendTargetLinks,trendPerGroup,trendTargetGroups,trendPostsPerGroup,trendPostDelay,trendPostSourceMode,trendStyleProfile,trendAnonymousEnabled].forEach(el=>el&&el.addEventListener("change",persistTrendDraft));
+[trendSourceLinks,trendTargetLinks,trendPerGroup,trendTargetGroups,trendPostsPerGroup,trendPostDelay,trendStyleProfile,trendAnonymousEnabled].forEach(el=>el&&el.addEventListener("change",persistTrendDraft));
+trendLearnUnlimited?.addEventListener("change",()=>{toggleTrendLearnLimit();persistTrendDraft();});
+trendPostSourceMode?.addEventListener("change",()=>{toggleTrendPostDistributionUI();persistTrendDraft();updateTrendPostPlan();});
+document.querySelectorAll(".trend-distribution-mode").forEach(input=>input.addEventListener("change",()=>{
+  if(input.checked&&input.value==="many-to-one"&&trendTargetGroups)trendTargetGroups.value=1;
+  persistTrendDraft();
+  updateTrendPostPlan();
+}));
+[trendTargetGroups,trendPostsPerGroup].forEach(el=>el?.addEventListener("change",updateTrendPostPlan));
+trendTargetLinks?.addEventListener("input",updateTrendPostPlan);
+trendTargetList?.addEventListener("change",updateTrendPostPlan);
 trendBackgroundEnabled?.addEventListener("change",()=>{toggleTrendBackgroundOptions();saveTrendBackgroundDraft();});
 trendBackgroundMode?.addEventListener("change",()=>{toggleTrendBackgroundOptions();saveTrendBackgroundDraft();});
 trendFixedColor?.addEventListener("change",saveTrendBackgroundDraft);
@@ -1819,7 +2171,7 @@ if(trendSourceKeyword)trendSourceKeyword.oninput=()=>{const k=trendSourceKeyword
 if(trendTargetKeyword)trendTargetKeyword.oninput=()=>{const k=trendTargetKeyword.value.trim().toLocaleLowerCase("vi");trendTargetList.querySelectorAll("label[data-name]").forEach(r=>r.style.display=!k||r.dataset.name.includes(k)?"flex":"none");};
 if(selectAllTrendSourceBtn)selectAllTrendSourceBtn.onclick=()=>{const rows=[...trendSourceList.querySelectorAll("label[data-name]")].filter(r=>r.style.display!=="none"),bs=rows.map(r=>r.querySelector(".trend-check")).filter(Boolean),on=bs.some(b=>!b.checked);bs.forEach(b=>b.checked=on);};
 if(selectAllTrendTargetBtn)selectAllTrendTargetBtn.onclick=()=>{const rows=[...trendTargetList.querySelectorAll("label[data-name]")].filter(r=>r.style.display!=="none"),bs=rows.map(r=>r.querySelector(".trend-check")).filter(Boolean),on=bs.some(b=>!b.checked);bs.forEach(b=>b.checked=on);};
-if(trendLearnedList)trendLearnedList.addEventListener("change",e=>{const input=e.target.closest?.(".trend-source-post-check");if(!input)return;const id=String(input.dataset.postId||"");if(!id)return;if(input.checked)trendPostSelectedIds.add(id);else trendPostSelectedIds.delete(id);updateTrendSelectedPostCount();chrome.storage.sync.set({trendPostSelectedIds:[...trendPostSelectedIds]});});
+if(trendLearnedList)trendLearnedList.addEventListener("change",e=>{const input=e.target.closest?.(".trend-source-post-check");if(!input)return;const id=String(input.dataset.postId||"");if(!id)return;if(input.checked)trendPostSelectedIds.add(id);else trendPostSelectedIds.delete(id);updateTrendSelectedPostCount();chrome.storage.sync.set({trendPostSelectedIds:[...trendPostSelectedIds]});updateTrendPostPlan();});
 async function deleteTrendLearnedPosts(ids,confirmDelete=true){
   const wanted=new Set((Array.isArray(ids)?ids:[]).map(String).filter(Boolean));
   if(!wanted.size){if(trendLearnStatus)trendLearnStatus.textContent=t("trend2.noPostsSelected");return;}
@@ -1831,8 +2183,8 @@ async function deleteTrendLearnedPosts(ids,confirmDelete=true){
   await chrome.storage.sync.set({trendPostSelectedIds:[...trendPostSelectedIds]});
   renderTrendLearned(remaining);
 }
-if(trendSelectAllPostsBtn)trendSelectAllPostsBtn.onclick=async()=>{const saved=await chrome.storage.local.get(["trendLearnPosts"]),ids=(Array.isArray(saved.trendLearnPosts)?saved.trendLearnPosts:[]).map(trendLearnedPostId).filter(Boolean);trendPostSelectedIds=new Set(ids);renderTrendLearned(saved.trendLearnPosts||[]);await chrome.storage.sync.set({trendPostSelectedIds:ids});};
-if(trendClearPostsBtn)trendClearPostsBtn.onclick=async()=>{trendPostSelectedIds=new Set();updateTrendSelectedPostCount();renderTrendLearned((await chrome.storage.local.get(["trendLearnPosts"])).trendLearnPosts||[]);await chrome.storage.sync.set({trendPostSelectedIds:[]});};
+if(trendSelectAllPostsBtn)trendSelectAllPostsBtn.onclick=async()=>{const saved=await chrome.storage.local.get(["trendLearnPosts"]),ids=(Array.isArray(saved.trendLearnPosts)?saved.trendLearnPosts:[]).map(trendLearnedPostId).filter(Boolean);trendPostSelectedIds=new Set(ids);renderTrendLearned(saved.trendLearnPosts||[]);await chrome.storage.sync.set({trendPostSelectedIds:ids});await updateTrendPostPlan();};
+if(trendClearPostsBtn)trendClearPostsBtn.onclick=async()=>{trendPostSelectedIds=new Set();updateTrendSelectedPostCount();renderTrendLearned((await chrome.storage.local.get(["trendLearnPosts"])).trendLearnPosts||[]);await chrome.storage.sync.set({trendPostSelectedIds:[]});await updateTrendPostPlan();};
 if(trendDeleteSelectedPostsBtn)trendDeleteSelectedPostsBtn.onclick=async()=>{await deleteTrendLearnedPosts([...trendPostSelectedIds]);};
 if(trendLearnedList)trendLearnedList.addEventListener("click",async e=>{const btn=e.target.closest?.(".trend-delete-post-btn");if(!btn)return;await deleteTrendLearnedPosts([String(btn.dataset.postId||"")]);});
 if(loadTrendGroupsBtn)loadTrendGroupsBtn.onclick=async()=>{
@@ -1846,11 +2198,86 @@ if(loadTrendGroupsBtn)loadTrendGroupsBtn.onclick=async()=>{
 function trendSourceText(posts,maxChars=6000){
   return (Array.isArray(posts)?posts:[]).filter(p=>p&&String(p.text||"").trim().length>=30).slice(0,12).map((p,i)=>`[Bài ${i+1} từ ${p.sourceGroupName||"nhóm nguồn"}]: ${String(p.text||"").replace(/\s+/g," ").trim().slice(0,700)}`).join("\n\n").slice(0,maxChars);
 }
-async function trendPostSourcePostsForRun(){
+function trendSelectedPostPlan(posts,groups){
+  const sourcePosts=Array.isArray(posts)?posts:[],targets=Array.isArray(groups)?groups:[];
+  if(!sourcePosts.length||!targets.length)return {entries:[],counts:[],reuseSingle:false};
+  if(sourcePosts.length===1){
+    return {entries:targets.map((group,groupIndex)=>({group,groupIndex,posts:[sourcePosts[0]]})),counts:targets.map(()=>1),reuseSingle:true};
+  }
+  if(sourcePosts.length<targets.length)throw new Error(t("trend2.planNeedMore",{posts:sourcePosts.length,groups:targets.length}));
+  const base=Math.floor(sourcePosts.length/targets.length),extra=sourcePosts.length%targets.length;
+  let cursor=0;
+  const entries=targets.map((group,groupIndex)=>{
+    const count=base+(groupIndex<extra?1:0),assigned=sourcePosts.slice(cursor,cursor+count);
+    cursor+=count;
+    return {group,groupIndex,posts:assigned};
+  });
+  return {entries,counts:entries.map(entry=>entry.posts.length),reuseSingle:false};
+}
+function trendSelectedPostPlanForMode(posts,groups,mode=trendPostDistributionMode()){
+  const sourcePosts=Array.isArray(posts)?posts:[],targets=Array.isArray(groups)?groups:[];
+  if(mode==="many-to-one"){
+    if(sourcePosts.length<2)throw new Error(t("trend2.modeNeedsManyPosts"));
+    if(targets.length!==1)throw new Error(t("trend2.modeNeedsOneGroup"));
+  }else if(mode==="one-to-many"){
+    if(sourcePosts.length!==1)throw new Error(t("trend2.modeNeedsOnePost"));
+    if(targets.length<2)throw new Error(t("trend2.modeNeedsManyGroups"));
+  }else if(mode==="many-to-many"){
+    if(sourcePosts.length<2)throw new Error(t("trend2.modeNeedsManyPosts"));
+    if(targets.length<2)throw new Error(t("trend2.modeNeedsManyGroups"));
+  }
+  return trendSelectedPostPlan(sourcePosts,targets);
+}
+function trendSequentialPostPlan(posts,groups,postsPerGroup){
+  const sourcePosts=Array.isArray(posts)?posts:[],targets=Array.isArray(groups)?groups:[];
+  const perGroup=Math.max(1,Number(postsPerGroup)||1),total=targets.length*perGroup;
+  if(sourcePosts.length<total)throw new Error(t("trend2.notEnoughUniquePosts",{total,groups:targets.length,perGroup,available:sourcePosts.length}));
+  let cursor=0;
+  const entries=targets.map((group,groupIndex)=>{
+    const assigned=sourcePosts.slice(cursor,cursor+perGroup);cursor+=perGroup;
+    return {group,groupIndex,posts:assigned};
+  });
+  return {entries,counts:entries.map(entry=>entry.posts.length),reuseSingle:false};
+}
+function trendPlanSummary(plan,postCount,groupCount){
+  if(plan.reuseSingle)return t("trend2.planReuse",{groups:groupCount});
+  const counts=plan.counts||[],unique=[...new Set(counts)];
+  if(unique.length===1)return t("trend2.planEqual",{posts:postCount,groups:groupCount,perGroup:unique[0]||0});
+  return t("trend2.planUneven",{posts:postCount,groups:groupCount,counts:counts.join(" / ")});
+}
+function toggleTrendPostDistributionUI(){
+  const selected=trendPostSourceMode?.value!=="sequential";
+  if(trendPostsPerGroupWrap)trendPostsPerGroupWrap.style.display=selected?"none":"";
+  if(trendDistributionModes){
+    trendDistributionModes.style.display="";
+    trendDistributionModes.style.opacity=selected?"1":".58";
+    trendDistributionModes.setAttribute("aria-disabled",String(!selected));
+  }
+  if(trendDistributionHint)trendDistributionHint.textContent=selected?t("trend2.distributionHint"):t("trend2.distributionSequentialHint");
+  document.querySelectorAll(".trend-distribution-mode").forEach(input=>input.disabled=!selected);
+}
+async function updateTrendPostPlan(){
+  if(!trendPostPlan)return;
+  try{
+    const picked=trendTargetGroupsForRun();
+    const target=Math.max(1,Math.min(500,parseInt(trendTargetGroups?.value)||3)),groups=picked.slice(0,target);
+    if(!groups.length){trendPostPlan.textContent=t("trend2.planEmpty");return;}
+    const mode=trendPostSourceMode?.value==="sequential"?"sequential":"selected";
+    const perGroup=Math.max(1,Math.min(30,parseInt(trendPostsPerGroup?.value)||1));
+    const required=mode==="sequential"?groups.length*perGroup:null;
+    const selection=await trendPostSourcePostsForRun(required),posts=selection.posts;
+    if(!posts.length){trendPostPlan.textContent=mode==="sequential"?t("trend2.planSequentialEmpty"):t("trend2.planSelectPosts");return;}
+    const plan=mode==="selected"?trendSelectedPostPlanForMode(posts,groups):trendSequentialPostPlan(posts,groups,perGroup);
+    trendPostPlan.textContent=mode==="selected"?trendPlanSummary(plan,posts.length,groups.length):t("trend2.planSequential",{groups:groups.length,perGroup,total:groups.length*perGroup});
+  }catch(e){trendPostPlan.textContent=String(e?.message||e||t("trend2.planEmpty"));}
+}
+async function trendPostSourcePostsForRun(requiredCount=null){
   const saved=await chrome.storage.local.get(["trendLearnPosts"]),posts=Array.isArray(saved.trendLearnPosts)?saved.trendLearnPosts:[];
   const mode=trendPostSourceMode?.value==="sequential"?"sequential":"selected";
   const perGroup=Math.max(1,Math.min(30,parseInt(trendPostsPerGroup?.value)||1));
-  if(mode==="sequential")return {mode,posts:posts.slice(0,perGroup)};
+  const hasRequiredCount=requiredCount!==null&&requiredCount!==undefined&&Number.isFinite(Number(requiredCount));
+  const limit=hasRequiredCount?Math.max(1,Number(requiredCount)):perGroup;
+  if(mode==="sequential")return {mode,posts:posts.slice(0,limit)};
   const selected=new Set([...trendPostSelectedIds]);
   return {mode,posts:posts.filter(post=>selected.has(trendLearnedPostId(post)))};
 }
@@ -1868,20 +2295,21 @@ if(trendLearnBtn)trendLearnBtn.onclick=async()=>{
   }
   setTrendLearnRunning(true);
   try{
-    const other=await chrome.storage.local.get(["groupPostActive","groupShareActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","isRunning","friendConfirmActive","isScraping","salesPostActive","trendPostActive"]);
+    const other=await chrome.storage.local.get(["groupPostActive","groupShareActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","isRunning","friendConfirmActive","isScraping","salesPostActive","trendPostActive"]);
     if(Object.values(other).some(Boolean))throw new Error("Một tính năng khác đang chạy; hãy dừng trước khi học bài");
     const mode=trendLearnMode();
     let picked=trendSourceGroupsForRun();
     const learnNote=mode==="links"?" (theo link nguồn)":mode==="source-selected"?" (theo danh sách nhóm nguồn đã chọn)":" (theo danh sách nhóm đích đã chọn)";
     if(mode==="links"&&!String(trendSourceLinks?.value||"").trim())throw new Error("Hãy nhập ít nhất một link nhóm nguồn");
     if(!picked.length)throw new Error(mode==="target-selected"?"Hãy tích ít nhất một nhóm đích ở B2":"Hãy tích ít nhất một nhóm nguồn trong danh sách bên dưới");
-    const per=Math.max(1,Math.min(30,parseInt(trendPerGroup.value)||10));
+    const unlimited=trendLearnUnlimited?trendLearnUnlimited.checked:true;
+    const per=Math.max(1,parseInt(trendPerGroup.value)||10);
     const tab=await getActiveTab();if(!tab)throw new Error("Không tìm thấy tab Facebook");
     const runId=`trend-learn-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-    const learnCfg={groups:picked.slice(0,20),perGroup:per};
+    const learnCfg={groups:picked.slice(0,20),perGroup:unlimited?0:per,unlimited};
     await persistTrendDraft();
-    await chrome.storage.local.set({trendLearnConfig:learnCfg,trendLearnRunId:runId,trendLearnOwnerTabId:tab.id,trendLearnActive:true,trendLearnIndex:0,trendLearnPosts:[],trendLearnCount:0,trendLearnReady:false,trendLastDiag:null,trendLearnStatus:`Đang chuẩn bị học ${learnCfg.groups.length} nhóm${learnNote}...`});
-    trendLearnStatus.textContent=`Đang chuẩn bị học ${learnCfg.groups.length} nhóm${learnNote}...`;
+    await chrome.storage.local.set({trendLearnConfig:learnCfg,trendLearnRunId:runId,trendLearnOwnerTabId:tab.id,trendLearnActive:true,trendLearnIndex:0,trendLearnPosts:[],trendLearnCount:0,trendLearnReady:false,trendLastDiag:null,trendLearnStatus:`Đang chuẩn bị học ${learnCfg.groups.length} nhóm${learnNote}${unlimited?" — không giới hạn số bài":""}...`});
+    trendLearnStatus.textContent=`Đang chuẩn bị học ${learnCfg.groups.length} nhóm${learnNote}${unlimited?" — không giới hạn số bài":""}...`;
     const first=learnCfg.groups[0];
     if(!tab.url?.includes("facebook.com/groups/")){await chrome.tabs.update(tab.id,{url:first.url});await new Promise(r=>setTimeout(r,4500));}
     chrome.tabs.sendMessage(tab.id,{action:"startTrendLearn",runId,config:learnCfg},async res=>{
@@ -1961,21 +2389,31 @@ if(trendPostBtn)trendPostBtn.onclick=async()=>{
   if(trendPostRunning)return;
   setTrendPostRunning(true);
   try{
-    const other=await chrome.storage.local.get(["groupPostActive","groupShareActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","isRunning","friendConfirmActive","isScraping","salesPostActive","trendLearnActive"]);
+    const other=await chrome.storage.local.get(["groupPostActive","groupShareActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","isRunning","friendConfirmActive","isScraping","salesPostActive","trendLearnActive"]);
     if(Object.values(other).some(Boolean))throw new Error("Một tính năng khác đang chạy; hãy dừng trước khi đăng");
-    const sourceSelection=await trendPostSourcePostsForRun(),posts=sourceSelection.posts;
+    const picked=trendTargetGroupsForRun();
+    if(!picked.length)throw new Error("Hãy tích ít nhất một nhóm đích");
+    const target=Math.max(1,Math.min(500,parseInt(trendTargetGroups.value)||3)),requestedPostsPerGroup=Math.max(1,Math.min(30,parseInt(trendPostsPerGroup?.value)||1)),postDelay=Math.min(3600,Math.max(5,parseInt(trendPostDelay?.value)||30)),groups=picked.slice(0,target);
+    const sourceMode=trendPostSourceMode?.value==="sequential"?"sequential":"selected";
+    const requestedSlots=groups.length*requestedPostsPerGroup;
+    const sourceSelection=await trendPostSourcePostsForRun(sourceMode==="sequential"?requestedSlots:null),posts=sourceSelection.posts;
     if(!posts.length)throw new Error(sourceSelection.mode==="sequential"?"Không còn bài học chưa dùng để đăng.":"Hãy tích ít nhất một bài học để đăng trong lượt B2.");
+    const distributionMode=sourceSelection.mode==="selected"?trendPostDistributionMode():"sequential";
+    const postPlan=sourceSelection.mode==="selected"
+      ?trendSelectedPostPlanForMode(posts,groups,distributionMode)
+      :trendSequentialPostPlan(posts,groups,requestedPostsPerGroup);
+    const postsPerGroup=Math.max(1,...postPlan.counts);
     const source=trendSourceText(posts);
     const prompt=trendRewritePrompt();
     const background=readTrendBackgroundConfig();
     const aiConfig=await getUnifiedAiConfig();
     if(!aiConfig.key||!aiConfig.model)throw new Error("Chưa có API Key/Model AI dùng chung");
-    const picked=trendTargetGroupsForRun();
-    if(!picked.length)throw new Error("Hãy tích ít nhất một nhóm đích");
-    const target=Math.max(1,Math.min(500,parseInt(trendTargetGroups.value)||3)),postsPerGroup=Math.max(1,Math.min(30,parseInt(trendPostsPerGroup?.value)||1)),postDelay=Math.min(3600,Math.max(5,parseInt(trendPostDelay?.value)||30)),groups=picked.slice(0,target);
-    const sourcePostIds=posts.map(trendLearnedPostId).filter(Boolean),jobs=[];
-    groups.forEach((group,groupIndex)=>{for(let postIndex=0;postIndex<postsPerGroup;postIndex++)jobs.push({group:{...group},groupIndex,postIndex,sourcePostIds,sourceText:source,draft:"",variant:jobs.length+1});});
-    trendLearnStatus.textContent=`AI đang viết ${jobs.length} bài từ ${posts.length} bài học...`;
+    const sourcePostIds=[...new Set(posts.map(trendLearnedPostId).filter(Boolean))],jobs=[];
+    postPlan.entries.forEach(entry=>entry.posts.forEach((sourcePost,postIndex)=>{
+      const jobSourceId=trendLearnedPostId(sourcePost),jobSourceText=trendSourceText([sourcePost]);
+      jobs.push({group:{...entry.group},groupIndex:entry.groupIndex,postIndex,groupPostTotal:entry.posts.length,sourcePostIds:jobSourceId?[jobSourceId]:[],sourceText:jobSourceText,draft:"",variant:jobs.length+1});
+    }));
+    trendLearnStatus.textContent=`${trendPlanSummary(postPlan,posts.length,groups.length)} AI đang viết ${jobs.length} bài...`;
     const runtimeAi={provider:aiConfig.provider,model:aiConfig.model,url:aiConfig.url};
     const drafts=[];
     for(let i=0;i<jobs.length;i++){
@@ -1989,7 +2427,7 @@ if(trendPostBtn)trendPostBtn.onclick=async()=>{
         trendLearnStatus.textContent=`Sẽ lấy tên thật của nhóm ${job.groupIndex+1}/${groups.length} khi mở nhóm...`;
         continue;
       }
-      const res=await chrome.runtime.sendMessage({action:"aiRewriteTrend",sourceText:source,groupName:group.name,prompt,aiConfig:runtimeAi,styleProfileId:trendStyleProfile.value||"",variant:job.variant,background});
+      const res=await chrome.runtime.sendMessage({action:"aiRewriteTrend",sourceText:job.sourceText,groupName:group.name,prompt,aiConfig:runtimeAi,styleProfileId:trendStyleProfile.value||"",variant:job.variant,background});
       if(!res?.ok)throw new Error(`AI lỗi ở nhóm ${group.name}: ${res?.error||"unknown"}`);
       drafts.push(res.content);
       job.draft=res.content;
@@ -1999,9 +2437,9 @@ if(trendPostBtn)trendPostBtn.onclick=async()=>{
     if(trendPreview){const previewDraft=drafts.find(Boolean)||"AI sẽ lấy tên thật của nhóm sau khi mở từng link đích.";trendPreview.textContent=`Đã chuẩn bị ${drafts.length} bài. Bản đầu cho "${groups[0].name}":\n\n${previewDraft}`;trendPreview.classList.remove("hidden");}
     const tab=await getActiveTab();if(!tab)throw new Error("Không tìm thấy tab Facebook");
     const runId=`trend-post-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-    const cfg={groups,jobs,drafts,sourceText:source,sourcePostIds,sourceMode:sourceSelection.mode,postsPerGroup,postDelay,prompt,styleProfileId:trendStyleProfile.value||"",interDelay:postDelay,anonymousMode:!!(trendAnonymousEnabled&&trendAnonymousEnabled.checked),background};
+    const cfg={groups,jobs,drafts,sourceText:source,sourcePostIds,sourceMode:sourceSelection.mode,distribution:distributionMode,postsPerGroup,postDelay,prompt,styleProfileId:trendStyleProfile.value||"",interDelay:postDelay,anonymousMode:!!(trendAnonymousEnabled&&trendAnonymousEnabled.checked),background};
     await persistTrendDraft();
-    const postConfig={groups,jobs,drafts,sourceText:cfg.sourceText,sourcePostIds,sourceMode:cfg.sourceMode,postsPerGroup,postDelay,prompt,styleProfileId:cfg.styleProfileId,interDelay:cfg.interDelay,anonymousMode:cfg.anonymousMode,background:cfg.background};
+    const postConfig={groups,jobs,drafts,sourceText:cfg.sourceText,sourcePostIds,sourceMode:cfg.sourceMode,distribution:cfg.distribution,postsPerGroup,postDelay,prompt,styleProfileId:cfg.styleProfileId,interDelay:cfg.interDelay,anonymousMode:cfg.anonymousMode,background:cfg.background};
     await chrome.storage.local.set({trendPostConfig:postConfig,trendPostRunId:runId,trendPostOwnerTabId:tab.id,trendPostActive:true,trendPostIndex:0,trendPostDone:0,trendPostSkipped:0,trendPostTotal:jobs.length,trendPostNextAt:0,trendPostLastColor:"",trendPostStage:"",trendPostSubmitIndex:-1,trendPostSubmitDispatchedAt:0,trendPostAnonymousMode:cfg.anonymousMode?"anonymous":"normal",trendPostStatus:`Đang chuẩn bị đăng ${jobs.length} bài vào ${groups.length} nhóm...`});
     trendPostStatus.textContent=`Đang chuẩn bị đăng ${jobs.length} bài vào ${groups.length} nhóm...`;
     if(!tab.url?.includes("facebook.com/groups/")){await chrome.tabs.update(tab.id,{url:groups[0].url});await new Promise(r=>setTimeout(r,4500));}
@@ -2014,8 +2452,10 @@ if(trendPostBtn)trendPostBtn.onclick=async()=>{
 if(trendPostStopBtn)trendPostStopBtn.onclick=async()=>{setTrendPostRunning(false);await chrome.storage.local.set({trendPostActive:false,trendPostNextAt:0,trendPostStage:"",trendPostStatus:"Đã dừng đăng bài viết lại"});broadcastToFacebookTabs({action:"stopTrendPost"});const tab=await getActiveTab();if(tab?.url?.includes("facebook.com"))chrome.tabs.sendMessage(tab.id,{action:"stopTrendPost"});};
 if(trendPostResetBtn)trendPostResetBtn.onclick=async()=>{setTrendPostRunning(false);const tab=await getActiveTab();if(tab?.url?.includes("facebook.com"))chrome.tabs.sendMessage(tab.id,{action:"resetTrendPost"});await chrome.storage.local.set({trendPostActive:false,trendPostRunId:"",trendPostOwnerTabId:0,trendPostConfig:null,trendPostIndex:0,trendPostDone:0,trendPostSkipped:0,trendPostTotal:0,trendPostNextAt:0,trendPostLastColor:"",trendPostStage:"",trendPostSubmitIndex:-1,trendPostSubmitDispatchedAt:0,trendPostStatus:"Đã reset đăng bài viết lại"});broadcastToFacebookTabs({action:"resetTrendPost"});};
 try{
-  chrome.storage.sync.get(["trendPerGroup","trendPrompt","trendGroupPrompt","trendSourceLinks","trendTargetLinks","trendStyleProfile","trendTargetGroups","trendInterDelay","trendPostsPerGroup","trendPostDelay","trendPostSourceMode","trendPostSelectedIds","trendLearnSourceMode","trendLearnFromTarget","trendBackgroundEnabled","trendBackgroundMode","trendBackgroundFixedColor","trendBackgroundColors","trendBackgroundMaxChars"],r=>{
-    if(r.trendPerGroup!==undefined&&trendPerGroup)trendPerGroup.value=r.trendPerGroup;
+  chrome.storage.sync.get(["trendPerGroup","trendLearnUnlimited","trendPrompt","trendGroupPrompt","trendSourceLinks","trendTargetLinks","trendStyleProfile","trendTargetGroups","trendInterDelay","trendPostsPerGroup","trendPostDelay","trendPostSourceMode","trendPostDistributionMode","trendPostSelectedIds","trendLearnSourceMode","trendLearnFromTarget","trendBackgroundEnabled","trendBackgroundMode","trendBackgroundFixedColor","trendBackgroundColors","trendBackgroundMaxChars"],r=>{
+    if(r.trendPerGroup!==undefined&&trendPerGroup)trendPerGroup.value=Math.max(1,parseInt(r.trendPerGroup)||10);
+    if(trendLearnUnlimited)trendLearnUnlimited.checked=r.trendLearnUnlimited!==false;
+    toggleTrendLearnLimit();
     if(r.trendPrompt!==undefined&&trendPrompt)trendPrompt.value=r.trendPrompt;
     if(r.trendGroupPrompt!==undefined&&trendGroupPrompt)trendGroupPrompt.value=r.trendGroupPrompt;
     if(r.trendSourceLinks!==undefined&&trendSourceLinks)trendSourceLinks.value=r.trendSourceLinks;
@@ -2024,6 +2464,9 @@ try{
     if(trendPostsPerGroup)trendPostsPerGroup.value=Math.max(1,Math.min(30,parseInt(r.trendPostsPerGroup)||1));
     if(trendPostDelay)trendPostDelay.value=Math.min(3600,Math.max(5,parseInt(r.trendPostDelay??r.trendInterDelay)||30));
     if(trendPostSourceMode)trendPostSourceMode.value=r.trendPostSourceMode==="sequential"?"sequential":"selected";
+    const savedDistribution=["auto","many-to-one","one-to-many","many-to-many"].includes(r.trendPostDistributionMode)?r.trendPostDistributionMode:"auto";
+    document.querySelectorAll(".trend-distribution-mode").forEach(input=>input.checked=input.value===savedDistribution);
+    toggleTrendPostDistributionUI();
     trendPostSelectedIds=new Set(Array.isArray(r.trendPostSelectedIds)?r.trendPostSelectedIds.map(String):[]);
     chrome.storage.local.get(["trendLearnPosts"]).then(s=>renderTrendLearned(s.trendLearnPosts||[])).catch(()=>{});
     if(r.trendStyleProfile!==undefined&&trendStyleProfile)trendStyleProfile.value=r.trendStyleProfile;
@@ -2039,6 +2482,7 @@ try{
     if(trendBackgroundMaxChars&&r.trendBackgroundMaxChars)trendBackgroundMaxChars.value=r.trendBackgroundMaxChars;
     toggleTrendBackgroundOptions();
     applyTrendLearnMode();
+    updateTrendPostPlan();
   });
   chrome.storage.local.get(["joinedGroups","trendLearnStatus","trendLearnCount","trendLearnActive","trendLearnPosts","trendLastDiag","trendLearnOutline","trendRewriteDrafts","trendPostStatus","trendPostDone","trendPostSkipped","trendPostTotal","trendPostActive"],r=>{
     if(r.joinedGroups)renderTrendGroups(r.joinedGroups);
@@ -2153,7 +2597,7 @@ chrome.storage.onChanged.addListener(changes=>{
 let isAICommenting=false;
 function setAIRunning(v){ isAICommenting=v; aiStartBtn.textContent=v?t("p.aiBusy"):t("ai.start"); aiStartBtn.classList.toggle("running",v); }
 aiStartBtn.onclick = async ()=>{
-  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);if(shareRun.groupShareActive||shareRun.salesPostActive||shareRun.trendLearnActive||shareRun.trendPostActive){aiStatus.textContent=t("p.shBusyAi");return;}
+  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"]);if(Object.values(shareRun).some(Boolean)){aiStatus.textContent=(shareRun.pageGroupJoinActive||shareRun.pageGroupPostActive||shareRun.pageWatchActive||shareRun.pageCommentActive)?t("pg.busyOther"):t("p.shBusyAi");return;}
   await saveAiKeys();
   const prompt = aiPrompt.value.trim();
   if(!prompt.includes("{postText}")){ aiStatus.textContent=t("p.aiNeedPrompt"); return; }
@@ -2293,10 +2737,11 @@ new MutationObserver(()=>{
 // của lần trước. Popup không tự đóng — trạng thái cập nhật trực tiếp.
 (async()=>{
   try{
-    const r=await chrome.storage.local.get(["salesPostActive","trendLearnActive","trendPostActive","groupShareActive","groupPostActive","groupInteractActive","isGroupJoining","isDiscoverJoining","isAICommenting","isFeedInteracting","isScraping","isRunning","friendConfirmActive","popupLastTab"]);
+    const r=await chrome.storage.local.get(["salesPostActive","trendLearnActive","trendPostActive","groupShareActive","groupPostActive","groupInteractActive","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","isAICommenting","isFeedInteracting","isScraping","isRunning","friendConfirmActive","popupLastTab"]);
     const panel=r.salesPostActive?"sales"
       :(r.trendLearnActive||r.trendPostActive)?"trend"
       :r.groupShareActive?"share"
+      :(r.pageGroupJoinActive||r.pageGroupPostActive||r.pageWatchActive||r.pageCommentActive)?"page"
       :(r.groupPostActive||r.groupInteractActive||r.isGroupJoining||r.isDiscoverJoining)?"group"
       :(r.isAICommenting||r.isFeedInteracting)?"feed"
       :r.isScraping?"scrape"

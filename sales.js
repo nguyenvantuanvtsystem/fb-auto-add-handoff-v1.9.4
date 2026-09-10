@@ -5,7 +5,7 @@
   window.__fbSalesPostV196=true;
   window.__fbSalesPostV197=true;
   window.__fbSalesPostV198=true;
-  console.log("[SalesPost] loaded v1.9.13");
+  console.log("[SalesPost] loaded v1.9.52");
 
   const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   const clean=value=>String(value||"").replace(/[\u200B-\u200D\u2060\uFEFF]/g," ").replace(/\s+/g," ").trim();
@@ -18,7 +18,7 @@
   const rand=(min,max)=>Math.floor(Math.random()*(Math.max(min,max)-Math.min(min,max)+1))+Math.min(min,max);
   const normalizedPost=value=>clean(value).toLocaleLowerCase("vi");
   let loopActive=false,stopRequested=false,currentRunId="",ownerTabId=0;
-  const debug=(event,details={})=>{try{console.log("[SalesPost]",event,details);}catch(_){ }};
+  const debug=(event,details={})=>{try{console.log("[SalesPost]",event,JSON.stringify(details));}catch(_){ }};
   const SALES_POST_AUTO={
     groupReadyWait:45000,groupStableWait:1600,
     composerOpenWait:45000,composerReadyWait:45000,
@@ -207,11 +207,20 @@
       return new File([bytes],String(data.name||"media"),{type:mime,lastModified:Date.now()});
     }catch(_){return null;}
   }
-  async function attachMedia(root,expectedCount=0){
+  async function attachMedia(root,mediaConfig={},groupIndex=-1){
     const stored=await chrome.runtime.sendMessage({action:"salesGetMedia",runId:currentRunId});
-    const records=Array.isArray(stored?.media)?stored.media:(stored?.media?[stored.media]:[]),files=records.map(dataUrlFile).filter(Boolean);
-    const expected=Math.max(1,Number(expectedCount)||records.length);
-    if(!stored?.ok||!records.length)return {ok:true,attached:false,count:0};
+    const allRecords=Array.isArray(stored?.media)?stored.media:(stored?.media?[stored.media]:[]);
+    const configuredSelection=Array.isArray(mediaConfig?.plan?.[groupIndex])?mediaConfig.plan[groupIndex].map(Number).filter(index=>Number.isInteger(index)&&index>=0):null;
+    const records=configuredSelection?configuredSelection.map(index=>allRecords[index]).filter(Boolean):allRecords;
+    const expected=Math.max(1,configuredSelection?configuredSelection.length:Number(mediaConfig?.perGroup)||Number(mediaConfig?.count)||records.length);
+    const files=records.map(dataUrlFile).filter(Boolean);
+    if(!stored?.ok||!records.length)return {ok:true,attached:false,count:0,expected};
+    if(configuredSelection&&records.length!==configuredSelection.length)throw new Error("Kế hoạch random media không còn khớp với kho media đã chọn");
+    const manifest=Array.isArray(mediaConfig?.manifest)?mediaConfig.manifest:null;
+    if(configuredSelection&&manifest&&configuredSelection.some(index=>{
+      const actual=allRecords[index],expectedRecord=manifest[index];
+      return !actual||!expectedRecord||String(actual.name||"media")!==String(expectedRecord.name||"media")||String(actual.type||"")!==String(expectedRecord.type||"")||(Number(actual.size)||0)!==(Number(expectedRecord.size)||0);
+    }))throw new Error("Kho media đã thay đổi sau khi tạo kế hoạch random; hãy dừng và Start lại");
     if(files.length!==records.length)throw new Error("Không đọc được đầy đủ media đã chọn");
     if(records.length<expected)throw new Error(`Thiếu media đã chọn (${records.length}/${expected})`);
     let scope=composerRoot(root),input=findFileInput(scope);
@@ -225,7 +234,10 @@
     // Chỉ dùng tên file làm bằng chứng để tránh coi avatar/ảnh UI sẵn có trong
     // dialog là media đã gắn. Nếu Facebook không hiển thị tên, gửi lại toàn bộ
     // selection qua cùng một input để lần thử hiện tại tự tạo proof mới.
-    if(beforeNames>=files.length)return {ok:true,attached:true,count:files.length,reused:true};
+    // Khi Random chọn một tập con, chỉ thấy đủ tên file chưa đủ: composer có
+    // thể đang giữ draft cũ với nhiều media hơn selection hiện tại. Chỉ reuse
+    // khi số media hiện có không vượt quá selection cần gắn.
+    if(beforeNames>=files.length&&(!configuredSelection||beforeCount<=files.length))return {ok:true,attached:true,count:files.length,expected,reused:true};
     if(!await isActive())throw new Error("Đã dừng trước khi đính kèm media");
     try{input.multiple=true;}catch(_){ }
     const transfer=new DataTransfer();files.forEach(file=>transfer.items.add(file));input.files=transfer.files;
@@ -243,7 +255,7 @@
     }
     debug("media-proof-ok",{expected:files.length,previewCount:mediaPreviewCount(root),inputCount:mediaInputCount(root)});
     if(!await waitActive(1200))throw new Error("Đã dừng sau khi đính kèm media");
-    return {ok:true,attached:true,count:files.length,names:files.map(file=>file.name)};
+    return {ok:true,attached:true,count:files.length,expected,names:files.map(file=>file.name)};
   }
   async function typeContent(composer,content){
     const value=String(content||"").trim(),expected=normalizedPost(value).slice(0,45);
@@ -281,28 +293,84 @@
     error.salesIntegrity=true;
     throw error;
   }
+  const SALES_SUCCESS_RE=/(?:(?:bài viết|post).{0,100}(?:đã (?:được )?đăng|published|posted|submitted)|(?:đã (?:được )?đăng|published|posted|submitted).{0,100}(?:bài viết|post))/i;
+  const SALES_PENDING_RE=/(?:(?:bài viết|post).{0,140}(?:(?:đang )?chờ|pending|awaiting|(?:đã )?(?:gửi|submitted|sent)).{0,100}(?:phê duyệt|xét duyệt|xem xét|review|approval|moderation)|(?:(?:đang )?chờ|pending|awaiting).{0,100}(?:phê duyệt|xét duyệt|xem xét|review|approval|moderation).{0,40}(?:\d+\s*)?(?:bài viết|post))/i;
+  function salesVisibleAlerts(){
+    return [...document.querySelectorAll('[role="alert"],[role="status"]')]
+      .filter(visible).map(el=>normalizedPost(el.innerText||el.textContent)).filter(Boolean);
+  }
+  function salesNewConfirmation(beforeAlerts=new Set()){
+    return salesVisibleAlerts().find(text=>!beforeAlerts.has(text)&&(SALES_SUCCESS_RE.test(text)||SALES_PENDING_RE.test(text)))||"";
+  }
+  function salesVisiblePendingSignals(){
+    const main=document.querySelector('[role="main"]');
+    const links=[...document.querySelectorAll('a[href*="my_pending_content"],a[href*="pending"]')];
+    const candidates=[...(main?.children||[]),...links.flatMap(link=>[link,link.parentElement,link.parentElement?.parentElement])];
+    return [...new Set(candidates.filter(visible)
+      .map(el=>normalizedPost(el.innerText||el.textContent)).filter(text=>text&&SALES_PENDING_RE.test(text)))];
+  }
+  function salesNewPendingSignal(beforePending=new Set()){
+    return salesVisiblePendingSignals().find(text=>!beforePending.has(text))||"";
+  }
   function salesPostContentVisible(content){
     const expected=normalizedPost(content).slice(0,80);
     if(expected.length<10)return false;
-    const main=document.querySelector('[role="main"]')||document.body;
-    const feed=main.querySelector('[role="feed"]');
-    const candidates=[...main.querySelectorAll('[role="article"],[data-pagelet^="FeedUnit_"],[data-ad-preview="message"]'),...(feed?[...feed.children]:[])];
-    return candidates.some(node=>{
-      if(!visible(node)||node.closest('[role="dialog"]')||node.querySelector('[contenteditable="true"]'))return false;
+    const roots=[document.querySelector('[role="main"]'),document.body].filter(Boolean);
+    const candidates=[...new Set(roots.flatMap(root=>[
+      ...root.querySelectorAll('[role="article"],[data-pagelet^="FeedUnit_"],[data-ad-preview="message"],[role="feed"] > *')
+    ]))];
+    // Một thẻ bài hợp lệ thường có luôn ô bình luận contenteditable bên trong.
+    // Chỉ loại composer trong dialog; loại cả article sẽ làm mất proof bài vừa đăng.
+    if(candidates.some(node=>{
+      if(!visible(node)||node.closest('[role="dialog"]'))return false;
       return normalizedPost(node.innerText||node.textContent).includes(expected);
+    }))return true;
+    const dialogHasExpected=[...document.querySelectorAll('[role="dialog"]')]
+      .some(dialog=>visible(dialog)&&normalizedPost(dialog.innerText||dialog.textContent).includes(expected));
+    return !dialogHasExpected&&normalizedPost(document.body?.innerText||"").includes(expected);
+  }
+  function salesPendingPostVisible(content){
+    const expected=normalizedPost(content).slice(0,80);
+    if(expected.length<10)return false;
+    const roots=[document.querySelector('[role="main"]'),document.body].filter(Boolean);
+    const candidates=[...new Set(roots.flatMap(root=>[
+      ...root.querySelectorAll('[role="article"],[data-pagelet^="FeedUnit_"],[data-ad-preview="message"],[role="feed"] > *')
+    ]))];
+    return candidates.some(node=>{
+      if(!visible(node)||node.closest('[role="dialog"]'))return false;
+      const text=normalizedPost(node.innerText||node.textContent);
+      return text.includes(expected)&&SALES_PENDING_RE.test(text);
     });
   }
-  async function waitForSalesPostDisplayed(content,groupName){
-    const deadline=Date.now()+SALES_POST_AUTO.postVisibleWait,holdMs=SALES_POST_AUTO.afterPostMin*1000+Math.floor(Math.random()*(SALES_POST_AUTO.afterPostMax-SALES_POST_AUTO.afterPostMin+1))*1000;
-    const started=Date.now();
-    while(Date.now()<deadline){
+  async function waitForSalesPostDisplayed(content,groupName,proofOptions={}){
+    const visibilityDeadline=Date.now()+SALES_POST_AUTO.postVisibleWait;
+    const holdMs=SALES_POST_AUTO.afterPostMin*1000+Math.floor(Math.random()*(SALES_POST_AUTO.afterPostMax-SALES_POST_AUTO.afterPostMin+1))*1000;
+    const beforeAlerts=proofOptions.beforeAlerts instanceof Set?proofOptions.beforeAlerts:new Set(proofOptions.beforeAlerts||[]);
+    const beforePending=proofOptions.beforePending instanceof Set?proofOptions.beforePending:new Set(proofOptions.beforePending||[]);
+    let proofSeenAt=0,proofMethod="";
+    while(!proofSeenAt&&Date.now()<visibilityDeadline){
       if(!await isActive())return false;
-      const left=Math.max(1,Math.ceil((deadline-Date.now())/1000));
+      const confirmation=proofOptions.confirmation||salesNewConfirmation(beforeAlerts);
+      if(confirmation){proofSeenAt=Date.now();proofMethod=SALES_PENDING_RE.test(confirmation)?"pending-confirmation":"confirmation";}
+      else if(salesNewPendingSignal(beforePending)){proofSeenAt=Date.now();proofMethod="pending-banner";}
+      else if(salesPendingPostVisible(content)){proofSeenAt=Date.now();proofMethod="pending-card";}
+      else if(salesPostContentVisible(content)){proofSeenAt=Date.now();proofMethod="feed";}
+      if(proofSeenAt)break;
+      const left=Math.max(1,Math.ceil((visibilityDeadline-Date.now())/1000));
       await status(t("sales2.waitVisible",{name:groupName,left}),{salesPostStage:"waiting-visible"});
-      if(salesPostContentVisible(content)&&Date.now()-started>=holdMs){await chrome.storage.local.set({salesPostStage:"post-visible"});return true;}
       await sleep(500);
     }
-    const error=new Error(t("sales2.postNotVisible",{name:groupName}));error.submitDispatched=true;throw error;
+    if(!proofSeenAt){const error=new Error(t("sales2.postNotVisible",{name:groupName}));error.submitDispatched=true;throw error;}
+    await chrome.storage.local.set({salesPostStage:"post-proof-seen",salesPostProofSeenAt:proofSeenAt,salesPostProofMethod:proofMethod});
+    while(Date.now()-proofSeenAt<holdMs){
+      if(!await isActive())return false;
+      const left=Math.max(1,Math.ceil((holdMs-(Date.now()-proofSeenAt))/1000));
+      await status(proofMethod.startsWith("pending")?t("sales2.waitPending",{name:groupName,left}):t("sales2.waitVisible",{name:groupName,left}),{salesPostStage:proofMethod.startsWith("pending")?"waiting-pending":"waiting-visible"});
+      await sleep(500);
+    }
+    await chrome.storage.local.set({salesPostStage:proofMethod.startsWith("pending")?"post-pending":"post-visible"});
+    debug("post-proof-ok",{method:proofMethod});
+    return true;
   }
   async function submitComposer(composer,content,groupName,index){
     const ready=await waitFor(()=>{
@@ -310,7 +378,8 @@
       return current&&button?{...current,button}:null;
     },SALES_POST_AUTO.submitButtonWait);
     if(!ready)throw new Error("Nút Đăng chưa sẵn sàng");
-    const before=normalizedPost(content).slice(0,45);
+    const before=normalizedPost(content).slice(0,45),beforeAlerts=new Set(salesVisibleAlerts()),beforePending=new Set(salesVisiblePendingSignals());
+    let confirmation="";
     if(!await isActive())throw new Error("Đã dừng trước khi bấm Đăng");
     await chrome.storage.local.set({salesPostStage:"submit-armed",salesPostSubmitIndex:index,salesPostSubmitDispatchedAt:0});
     if(!await isActive())throw new Error("Đã dừng trước khi bấm Đăng");
@@ -318,6 +387,10 @@
     if(!await trustedClick(ready.button))throw new Error("Không bấm được nút Đăng");
     await chrome.storage.local.set({salesPostStage:"submitted",salesPostSubmitIndex:index,salesPostSubmitDispatchedAt:Date.now()});
     const proof=await waitFor(()=>{
+      confirmation=salesNewConfirmation(beforeAlerts);
+      if(confirmation)return true;
+      confirmation=salesNewPendingSignal(beforePending);
+      if(confirmation)return true;
       const d=dialog();
       if(!d)return true;
       const ed=editorIn(d),now=normalizedPost(ed?.innerText||ed?.textContent||ed?.value);
@@ -329,7 +402,7 @@
       throw error;
     }
     debug("submit-proof-ok");
-    await waitForSalesPostDisplayed(content,groupName);
+    await waitForSalesPostDisplayed(content,groupName,{beforeAlerts,beforePending,confirmation});
     return true;
   }
   async function generate(group,cfg,index){
@@ -356,7 +429,7 @@
       if(index>=cfg.groups.length){await status(`Hoàn tất: đã đăng ${done}/${cfg.groups.length}, bỏ qua ${skipped} nhóm`,{salesPostActive:false,salesPostNextAt:0});return;}
       const group=cfg.groups[index];
       if(!onExpectedGroup(group)){await status(`Đang mở đúng nhóm ${index+1}/${cfg.groups.length}: ${group.name}`);location.assign(group.url);return;}
-      if((state.salesPostStage==="submit-armed"||state.salesPostStage==="submitted"||state.salesPostStage==="waiting-visible"||state.salesPostStage==="post-visible")&&Number(state.salesPostSubmitIndex)===index){
+      if((state.salesPostStage==="submit-armed"||state.salesPostStage==="submitted"||state.salesPostStage==="waiting-visible"||state.salesPostStage==="waiting-pending"||state.salesPostStage==="post-proof-seen"||state.salesPostStage==="post-visible"||state.salesPostStage==="post-pending")&&Number(state.salesPostSubmitIndex)===index){
         await status(`Đã dừng tại nhóm ${group.name}: Facebook đã nhận cú bấm Đăng nhưng phiên bị tải lại trước khi xác minh bài hiển thị`,{salesPostActive:false,salesPostNextAt:0});return;
       }
       if(!await waitSalesGroupReady(group)){await status(t("sales2.groupLoading"),{salesPostActive:false,salesPostNextAt:0});return;}
@@ -371,7 +444,7 @@
         try{
           await status(`Đang mở ô đăng bài lần ${attempt}/2 tại: ${group.name}`);
           composer=await openComposer();
-          if(cfg.media?.enabled){const media=await attachMedia(composer.dialog,cfg.media.count);if(cfg.media.required&&(!media.attached||media.count<Number(cfg.media.count||1)))throw new Error("Chưa đính kèm đủ media");}
+          if(cfg.media?.enabled){const media=await attachMedia(composer.dialog,cfg.media,index);if(cfg.media.required&&(!media.attached||media.count<media.expected))throw new Error("Chưa đính kèm đủ media");}
           // Facebook thường thay cả dialog/contenteditable sau khi nhận file.
           // Luôn lấy lại node hiện tại trước khi nhập và trước khi bấm Đăng.
           composer=await waitComposer(composer.dialog,SALES_POST_AUTO.composerReadyWait);
@@ -397,8 +470,8 @@
         }
       }
       if(halted){await status(`Đã dừng tại nhóm ${group.name}: ${lastError}`,{salesPostActive:false,salesPostNextAt:0,salesPostIndex:index});return;}
-      if(!posted){skipped++;await chrome.storage.local.set({salesPostSkipped:skipped,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:`Bỏ qua nhóm ${group.name}: ${lastError}; đã đăng ${done}/${cfg.groups.length}`});index++;}
-      else{done++;index++;await chrome.storage.local.set({salesPostDone:done,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:`Đã đăng ${done}/${cfg.groups.length}: ${group.name}`});}
+      if(!posted){skipped++;await chrome.storage.local.set({salesPostSkipped:skipped,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostProofSeenAt:0,salesPostProofMethod:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:`Bỏ qua nhóm ${group.name}: ${lastError}; đã đăng ${done}/${cfg.groups.length}`});index++;}
+      else{done++;index++;await chrome.storage.local.set({salesPostDone:done,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostProofSeenAt:0,salesPostProofMethod:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:`Đã đăng ${done}/${cfg.groups.length}: ${group.name}`});}
       if(index<cfg.groups.length&&await isActive()){
         const delay=Math.min(3600,Math.max(5,Number(cfg.interGroupDelay)||30)),nextRun=Date.now()+delay*1000;
         await chrome.storage.local.set({salesPostIndex:index,salesPostNextAt:nextRun,salesPostStatus:`Đã xong nhóm ${done}/${cfg.groups.length}; chờ ${delay}s trước khi sang ${cfg.groups[index].name}`});
@@ -411,14 +484,14 @@
   chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
     if(msg.action==="startSalesPost"){
       currentRunId=String(msg.runId||"");stopRequested=false;ownerTabId=Number(sender.tab?.id)||ownerTabId;
-      chrome.storage.local.set({salesPostActive:true,salesPostRunId:currentRunId,salesPostOwnerTabId:ownerTabId,salesPostConfig:msg.config,salesPostIndex:0,salesPostDone:0,salesPostSkipped:0,salesPostTotal:msg.config?.groups?.length||0,salesPostNextAt:0,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:"Đang bắt đầu đăng bài bán hàng..."}).then(()=>{setTimeout(run,200);sendResponse({ok:true});});
+      chrome.storage.local.set({salesPostActive:true,salesPostRunId:currentRunId,salesPostOwnerTabId:ownerTabId,salesPostConfig:msg.config,salesPostIndex:0,salesPostDone:0,salesPostSkipped:0,salesPostTotal:msg.config?.groups?.length||0,salesPostNextAt:0,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostProofSeenAt:0,salesPostProofMethod:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:"Đang bắt đầu đăng bài bán hàng..."}).then(()=>{setTimeout(run,200);sendResponse({ok:true});});
       return true;
     }
     if(msg.action==="stopSalesPost"){
-      stopRequested=true;chrome.storage.local.set({salesPostActive:false,salesPostNextAt:0,salesPostStage:"",salesPostStatus:"Đã dừng đăng bài bán hàng"}).then(()=>sendResponse({ok:true}));return true;
+      stopRequested=true;chrome.storage.local.set({salesPostActive:false,salesPostNextAt:0,salesPostStage:"",salesPostProofSeenAt:0,salesPostProofMethod:"",salesPostStatus:"Đã dừng đăng bài bán hàng"}).then(()=>sendResponse({ok:true}));return true;
     }
     if(msg.action==="resetSalesPost"){
-      stopRequested=true;chrome.storage.local.set({salesPostActive:false,salesPostRunId:"",salesPostOwnerTabId:0,salesPostConfig:null,salesPostIndex:0,salesPostDone:0,salesPostSkipped:0,salesPostTotal:0,salesPostNextAt:0,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:"Đã reset tiến trình đăng bán hàng"}).then(()=>sendResponse({ok:true}));return true;
+      stopRequested=true;chrome.storage.local.set({salesPostActive:false,salesPostRunId:"",salesPostOwnerTabId:0,salesPostConfig:null,salesPostIndex:0,salesPostDone:0,salesPostSkipped:0,salesPostTotal:0,salesPostNextAt:0,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostProofSeenAt:0,salesPostProofMethod:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:"Đã reset tiến trình đăng bán hàng"}).then(()=>sendResponse({ok:true}));return true;
     }
     return false;
   });

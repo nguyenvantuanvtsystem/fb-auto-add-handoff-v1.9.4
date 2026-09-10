@@ -966,6 +966,10 @@
         if(!await waitConfirmSchedule(runId))return;
         state=await readConfirmActiveState(runId);
         if(!state)return;
+        // Start is self-contained: evaluate the saved filters here on every
+        // candidate. The optional popup scan is preview-only and never gates
+        // the confirmation loop.
+        await publishConfirmState(state,t("c.frConfirmAutoFilter"));
         const history=await loadConfirmHistory();
         const found=collectConfirmCandidates(state,history);
         if(!found.candidates.length){

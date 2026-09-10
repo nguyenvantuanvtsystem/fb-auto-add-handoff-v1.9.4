@@ -114,6 +114,9 @@
   #panelTrend:not(.hidden){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
   #panelTrend>.card{margin-bottom:0}
   #panelTrend>.full-width{grid-column:1/-1}
+  #panelPage:not(.hidden){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+  #panelPage>.card{margin-bottom:0}
+  #panelPage>.full-width{grid-column:1/-1}
   .share-ai-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:10px;align-items:start}
   .share-ai-transcript{min-height:160px;max-height:260px;overflow:auto;padding:8px;border:1px solid rgba(255,255,255,.75);border-radius:14px;background:rgba(255,255,255,.5)}
   .share-ai-message{margin:0 0 7px;padding:7px 9px;border-radius:9px;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.4}
@@ -208,6 +211,8 @@
     #joinedGroupList{grid-template-columns:1fr}
     #panelAdd:not(.hidden){display:block}
     #panelAdd>.card{margin-bottom:12px}
+    #panelPage:not(.hidden){display:block}
+    #panelPage>.card{margin-bottom:12px}
     .friend-mode-tabs{grid-template-columns:1fr}
     .friend-group-list{grid-template-columns:1fr}
   }
@@ -215,7 +220,7 @@
 </head>
 <body>
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
-    <h1 style="flex:1;margin:2px 0 10px">FB Auto Tool - Full <span style="font-size:11px;color:#65676b">v1.9.40</span></h1>
+    <h1 style="flex:1;margin:2px 0 10px">FB Auto Tool - Full <span style="font-size:11px;color:#65676b">v1.9.58</span></h1>
     <select id="uiLang" title="Language / Ngôn ngữ" style="width:auto;flex:none;margin-bottom:8px;font-weight:700">
       <option value="vi">🇻🇳 Tiếng Việt</option>
       <option value="en">🇬🇧 English</option>
@@ -225,6 +230,7 @@
     <div class="tab active" id="tabAdd" style="flex:1 1 45%" data-i18n="tab.add">🤝 Kết bạn</div>
     <div class="tab" id="tabScrape" style="flex:1 1 45%" data-i18n="tab.scrape">📄 Cào bài</div>
     <div class="tab" id="tabGroup" style="flex:1 1 45%" data-i18n="tab.group">👥 Nhóm</div>
+    <div class="tab" id="tabPage" style="flex:1 1 45%;color:#0b7a35" data-i18n="tab.page">🌱 Nuôi Page</div>
     <div class="tab" id="tabShare" style="flex:1 1 45%" data-i18n="tab.share">🔁 Share bài</div>
     <div class="tab" id="tabSales" style="flex:1 1 45%;color:#c2185b" data-i18n="tab.sales">🛍️ Đăng bán</div>
     <div class="tab" id="tabTrend" style="flex:1 1 45%;color:#0d47a1">📚 Học nhóm</div>
@@ -242,7 +248,7 @@
       </div>
       <div class="count" id="count">0 / 0</div>
       <div class="friend-metrics"><span><span data-i18n="fr.skipped">Bỏ qua:</span> <b id="friendSkipped">0</b></span><span><span data-i18n="fr.uncertain">Chưa xác nhận:</span> <b id="friendUncertain">0</b></span></div>
-      <div class="status" id="status" data-i18n="fr.chooseMode">Chọn một chế độ rồi bấm Quét thử hoặc Bắt đầu</div>
+      <div class="status" id="status" data-i18n="fr.chooseMode">Chọn chế độ rồi bấm Bắt đầu; tiện ích sẽ tự lọc theo cấu hình. Quét thử chỉ để xem trước.</div>
       <div class="row" style="margin-top:8px"><button id="startBtn" data-i18n="fr.start">▶ Bắt đầu</button><button id="scanBtn" data-i18n="fr.scan">🔍 Quét thử, không gửi</button></div>
       <div class="row" style="margin-top:7px"><button id="friendResetBtn" style="background:#ffebe6;color:#c0392b" data-i18n="fr.reset">↺ Reset tiến trình</button><button id="friendClearHistoryBtn" style="background:#fff3e0;color:#e65100" data-i18n="fr.clearHist">🧹 Xóa lịch sử chống trùng</button></div>
     </div>
@@ -260,7 +266,7 @@
         <p class="hint" data-i18n="fr.commonHint">Tự chờ Facebook tải mục “Thành viên có điểm chung”, bấm “Xem tất cả”, tiếp tục chờ nút “Thêm bạn bè” rồi kết lần lượt từ trên xuống.</p>
       </div>
       <div id="friendConfirmPanel" class="friend-source-panel hidden">
-        <p class="hint" data-i18n-html="fr.confirmHint">Mở trang <b>Lời mời kết bạn</b>, đọc các thông tin Facebook đang hiển thị và chỉ xác nhận hồ sơ đạt bộ lọc.</p>
+        <p class="hint" data-i18n-html="fr.confirmHint">Khi bấm <b>Bắt đầu</b>, tiện ích tự mở <b>Lời mời kết bạn</b>, áp dụng bộ lọc bên dưới và chỉ xác nhận hồ sơ đạt điều kiện. Không cần bấm Quét thử.</p>
         <button id="friendOpenConfirmBtn" style="background:#e7f3ff;color:#0866ff" data-i18n="fr.openConfirm">Mở lời mời kết bạn</button>
         <div id="friendConfirmResults" class="friend-group-list" style="grid-template-columns:1fr;max-height:220px"><div class="hint" style="padding:6px" data-i18n="fr.confirmNoScan">Chưa có kết quả quét</div></div>
       </div>
@@ -337,6 +343,118 @@
       <label data-i18n="st.shared">Hồ sơ dùng chung cho Comment AI, Đăng bài AI và Share bài</label>
       <select id="scrapeStyleProfile"><option value="" data-i18n="st.none">Không dùng hồ sơ</option></select>
       <div id="styleProfileStatus" class="status" data-i18n="st.empty">Chưa tạo hồ sơ</div>
+    </div>
+  </div>
+
+  <!-- TAB NUÔI PAGE: chọn Page + tham gia nhóm -->
+  <div id="panelPage" class="hidden">
+    <div class="card">
+      <h3 style="margin:0 0 6px;font-size:13px;color:#0b7a35" data-i18n="pg.title">🌱 Nuôi Page</h3>
+      <div class="status" id="pageStatus" data-i18n="pg.choosePage">Tải danh sách Page bạn đang quản trị rồi chọn một Page</div>
+      <div class="row" style="margin-top:8px">
+        <button id="loadManagedPagesBtn" style="background:#e8f5e9;color:#1b5e20" data-i18n="pg.loadPages">🔄 Tải Page đang quản trị</button>
+        <button id="refreshManagedPagesBtn" style="background:#e7f3ff;color:#0866ff" data-i18n="pg.refreshPages">↻ Quét lại</button>
+      </div>
+      <div id="managedPageList" class="friend-group-list" style="grid-template-columns:1fr;max-height:220px">
+        <div class="hint" style="padding:6px" data-i18n="pg.noPages">Chưa tải danh sách Page</div>
+      </div>
+      <p class="hint" data-i18n="pg.actorHint">Trước khi tham gia, tiện ích sẽ xác minh Facebook đang hoạt động với đúng Page đã chọn, không phải nick cá nhân.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 6px;font-size:13px;color:#1565c0" data-i18n="pg.joinTitle">➕ Page tham gia nhóm</h3>
+      <div class="page-mode-tabs" style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:8px">
+        <button id="pageModeKeywordBtn" style="background:#1565c0;color:#fff" data-i18n="pg.byKeyword">🔎 Theo từ khóa</button>
+        <button id="pageModeDiscoverBtn" style="background:#e4e6eb;color:#050505" data-i18n="pg.byDiscover">🧭 Theo nhóm đề xuất</button>
+      </div>
+      <div id="pageKeywordOptions">
+        <label data-i18n="pg.keyword">Từ khóa tìm nhóm</label>
+        <input id="pageGroupKeyword" type="text" placeholder="VD: nhiếp ảnh, mẹ và bé, kinh doanh" data-i18n-ph="pg.keywordPh">
+      </div>
+      <div class="row">
+        <div><label data-i18n="pg.target">Số nhóm muốn tham gia</label><input id="pageGroupTarget" type="number" min="1" max="100" value="10"></div>
+        <div><label data-i18n="pg.delay">Delay (giây)</label><input id="pageGroupMinDelay" type="number" min="5" max="3600" value="15"></div>
+      </div>
+      <div class="row">
+        <div><label data-i18n="pg.maxDelay">Delay tối đa</label><input id="pageGroupMaxDelay" type="number" min="5" max="3600" value="30"></div>
+        <div><label data-i18n="pg.answers">Câu trả lời mẫu (mỗi dòng một câu)</label><textarea id="pageGroupAnswers" rows="2" data-i18n="pg.answersDefault" data-i18n-once></textarea></div>
+      </div>
+      <label style="display:flex;align-items:center;gap:7px;margin-top:8px"><input id="pageGroupAiEnabled" type="checkbox" checked style="width:auto"><span data-i18n="pg.aiEnabled">🤖 Dùng AI trả lời câu hỏi nhóm</span></label>
+      <label data-i18n="pg.aiPrompt">Prompt AI trả lời — dùng {groupName} và {questions}</label>
+      <textarea id="pageGroupAiPrompt" rows="4" data-i18n="pg.aiPromptDefault" data-i18n-once></textarea>
+      <p class="hint" data-i18n="pg.aiHint">AI dùng cấu hình Provider/Model chung. Câu hỏi nội quy đơn giản dùng câu mẫu; câu hỏi mở mới gọi AI.</p>
+      <div class="count" id="pageGroupCount">0 / 0</div>
+      <div class="status" id="pageJoinStatus" data-i18n="pg.ready">Chọn Page và nguồn nhóm rồi bấm Bắt đầu</div>
+      <div class="row" style="margin-top:8px">
+        <button id="pageGroupStartBtn" style="background:linear-gradient(135deg,#0b7a35,#34a853);color:#fff" data-i18n="pg.start">▶ Page tham gia nhóm</button>
+        <button id="pageGroupStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
+      </div>
+      <button id="pageGroupResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="pg.reset">↺ Reset tiến trình Page</button>
+      <p class="warn" data-i18n="pg.warn">Mọi nhóm phải được Facebook xác nhận Page đã tham gia hoặc đã gửi yêu cầu.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 6px;font-size:13px;color:#1565c0" data-i18n="pgp.title">📝 Page đăng bài nhóm bằng AI</h3>
+      <label data-i18n="pgp.groups">Nhóm đích (mỗi dòng một URL, có thể ghi URL | Tên nhóm)</label>
+      <textarea id="pageGroupPostLinks" rows="3" data-i18n="pgp.groupsPh" placeholder="https://www.facebook.com/groups/.../"></textarea>
+      <div class="row">
+        <div><label data-i18n="pgp.target">Số nhóm muốn đăng</label><input id="pageGroupPostTarget" type="number" min="1" max="100" value="5"></div>
+        <div><label data-i18n="pgp.delay">Delay (giây)</label><input id="pageGroupPostMinDelay" type="number" min="5" max="3600" value="30"></div>
+      </div>
+      <div class="row">
+        <div><label data-i18n="pgp.maxDelay">Delay tối đa</label><input id="pageGroupPostMaxDelay" type="number" min="5" max="3600" value="60"></div>
+        <div><label data-i18n="pgp.prompt">Prompt tạo bài</label><textarea id="pageGroupPostPrompt" rows="3" data-i18n="pgp.promptDefault" data-i18n-once></textarea></div>
+      </div>
+      <div class="count" id="pageGroupPostCount">0 / 0</div>
+      <div class="status" id="pageGroupPostStatus" data-i18n="pgp.ready">Chọn Page và nhóm đích rồi bấm Bắt đầu</div>
+      <div class="row" style="margin-top:8px">
+        <button id="pageGroupPostStartBtn" style="background:linear-gradient(135deg,#1565c0,#42a5f5);color:#fff" data-i18n="pgp.start">▶ Đăng bài nhóm bằng Page</button>
+        <button id="pageGroupPostStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
+      </div>
+      <button id="pageGroupPostResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="pgp.reset">↺ Reset đăng bài Page</button>
+      <p class="hint" data-i18n="pgp.hint">AI đọc chủ đề nhóm và các bài gần đây để tạo một bài mở thảo luận; không đăng lại cùng nội dung.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 6px;font-size:13px;color:#7b1fa2" data-i18n="pgw.title">🔎 Theo dõi Page theo từ khóa</h3>
+      <label data-i18n="pgw.keyword">Từ khóa Page</label>
+      <input id="pageWatchKeyword" type="text" data-i18n-ph="pgw.keywordPh" placeholder="VD: nội thất, marketing, mẹ và bé">
+      <div class="row">
+        <div><label data-i18n="pgw.target">Số Page muốn theo dõi</label><input id="pageWatchTarget" type="number" min="1" max="100" value="10"></div>
+        <div><label data-i18n="pgw.minFollowers">Follower tối thiểu</label><input id="pageWatchMinFollowers" type="number" min="0" value="0"></div>
+      </div>
+      <label data-i18n="pgw.exclude">Từ khóa loại trừ (mỗi dòng hoặc dấu phẩy)</label>
+      <input id="pageWatchExclude" type="text" data-i18n-ph="pgw.excludePh" placeholder="ví dụ: tuyển dụng, bất động sản">
+      <div class="count" id="pageWatchCount">0 / 0</div>
+      <div class="status" id="pageWatchStatus" data-i18n="pgw.ready">Nhập từ khóa rồi bấm Bắt đầu</div>
+      <div class="row" style="margin-top:8px">
+        <button id="pageWatchStartBtn" style="background:linear-gradient(135deg,#7b1fa2,#ba68c8);color:#fff" data-i18n="pgw.start">▶ Theo dõi Page</button>
+        <button id="pageWatchStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
+      </div>
+      <button id="pageWatchResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="pgw.reset">↺ Reset theo dõi</button>
+      <p class="hint" data-i18n="pgw.hint">Danh sách Page đã theo dõi được lưu riêng để dùng cho Comment AI.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 6px;font-size:13px;color:#e65100" data-i18n="pgc.title">💬 Comment AI bằng Page</h3>
+      <div class="row">
+        <div><label data-i18n="pgc.source">Nguồn bài</label><select id="pageCommentSource"><option value="feed" data-i18n="pgc.feed">Bản tin</option><option value="followed" data-i18n="pgc.followed">Page đã theo dõi</option></select></div>
+        <div><label data-i18n="pgc.target">Số bài muốn comment</label><input id="pageCommentTarget" type="number" min="1" max="100" value="10"></div>
+      </div>
+      <div class="row">
+        <div><label data-i18n="pgc.delay">Delay (giây)</label><input id="pageCommentMinDelay" type="number" min="5" max="3600" value="20"></div>
+        <div><label data-i18n="pgc.maxDelay">Delay tối đa</label><input id="pageCommentMaxDelay" type="number" min="5" max="3600" value="45"></div>
+      </div>
+      <label data-i18n="pgc.prompt">Prompt Comment AI</label>
+      <textarea id="pageCommentPrompt" rows="4" data-i18n="pgc.promptDefault" data-i18n-once></textarea>
+      <div class="count" id="pageCommentCount">0 / 0</div>
+      <div class="status" id="pageCommentStatus" data-i18n="pgc.ready">Chọn nguồn bài rồi bấm Bắt đầu</div>
+      <div class="row" style="margin-top:8px">
+        <button id="pageCommentStartBtn" style="background:linear-gradient(135deg,#e65100,#ff9800);color:#fff" data-i18n="pgc.start">▶ Comment bằng Page</button>
+        <button id="pageCommentStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
+      </div>
+      <button id="pageCommentResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="pgc.reset">↺ Reset Comment Page</button>
+      <p class="hint" data-i18n="pgc.hint">AI chỉ đọc bài và tạo comment theo prompt; không có bước phân loại chủ đề riêng.</p>
     </div>
   </div>
 
@@ -423,6 +541,11 @@ Nội dung bài gốc: {postText}</textarea>
        <label data-i18n="sales.mediaLabel">Ảnh hoặc video đính kèm (tùy chọn, có thể chọn nhiều)</label>
        <input id="salesMediaInput" type="file" accept="image/*,video/*" multiple>
        <div class="row" style="margin-top:6px"><div id="salesMediaPreview" class="hint" style="align-self:center">Chưa chọn media. Bài không có media vẫn đăng được.</div><button id="salesClearMediaBtn" style="background:#e4e6eb;color:#050505" data-i18n="sales.mediaClear">Xóa media</button></div>
+      <div class="row" style="margin-top:7px;align-items:flex-end">
+        <label style="margin:0"><span data-i18n="sales.mediaMode">Chế độ media</span><select id="salesMediaMode"><option value="all" data-i18n="sales.mediaModeAll">📎 Đăng toàn bộ media đã chọn</option><option value="random" data-i18n="sales.mediaModeRandom">🎲 Random media theo từng nhóm</option></select></label>
+        <label style="margin:0"><span data-i18n="sales.mediaRandomCount">Số media mỗi nhóm khi Random</span><input id="salesMediaPerGroup" type="number" min="1" max="20" value="1" disabled></label>
+      </div>
+      <p class="hint" style="margin:5px 0 0" data-i18n="sales.mediaRandomHint">Khi bật, mỗi nhóm nhận một tập media ngẫu nhiên; nếu đặt số media bằng tổng số đã chọn thì chỉ đảo thứ tự. Tránh lặp y hệt nhóm liền trước khi có thể. Đây không phải bảo đảm tránh giới hạn spam của Facebook.</p>
       <label data-i18n="sales.promptLabel">Prompt tạo bài — dùng {groupName}, {sourceText}, {productInfo}</label>
       <textarea id="salesPrompt" rows="7">Đọc thông tin sản phẩm và viết một bài đăng bán hàng tự nhiên bằng tiếng Việt cho nhóm "{groupName}". Nội dung theo hướng vừa chia sẻ nhu cầu bán vừa hỏi ý kiến thành viên, ví dụ hỏi giá hợp lý. Chỉ dùng dữ kiện có trong nguồn, không tự bịa thông số, giá, bảo hành hay cam kết. Không giật tít, không spam, không hashtag, không URL, không Markdown, không lời dẫn của AI. Bài 2-4 câu, lịch sự và chỉ trả về nội dung bài đăng. Thông tin sản phẩm: {sourceText}. Ghi chú thêm: {productInfo}.</textarea>
       <details class="prompt-guide"><summary data-i18n="prompt.guideTitle">📘 Cách viết Prompt hiệu quả</summary><div class="guide-copy" data-i18n="prompt.salesGuide">...</div></details>
@@ -509,9 +632,14 @@ Nội dung bài gốc: {postText}</textarea>
       <input id="trendSourceKeyword" type="text" placeholder="VD: marketing, mua bán">
       <div id="trendSourceList" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-height:260px;overflow:auto;border:1px solid #ccd0d5;border-radius:7px;margin-top:7px;padding:5px"><div class="hint" style="padding:6px">Chưa có danh sách nhóm</div></div>
       </div>
-      <div class="row" style="margin-top:8px">
-        <div><label>Số bài mới nhất mỗi nhóm</label><input id="trendPerGroup" type="number" min="1" max="30" value="10"></div>
+      <div class="row" style="margin-top:8px;align-items:center">
+        <label style="display:flex;align-items:center;gap:6px;white-space:nowrap"><input id="trendLearnUnlimited" type="checkbox" checked style="width:auto"><span data-i18n="trend2.learnUnlimited">Học đến hết bài có thể tải (không giới hạn)</span></label>
       </div>
+      <div id="trendPerGroupWrap" style="margin-top:8px">
+        <label data-i18n="trend2.learnPerGroup">Số bài tối đa mỗi nhóm</label>
+        <input id="trendPerGroup" type="number" min="1" value="10" style="max-width:220px">
+      </div>
+      <p class="hint" data-i18n="trend2.learnUnlimitedHint">Mặc định bật: B1 không giới hạn số bài, chỉ dừng khi Facebook không còn bài mới, bạn bấm Dừng hoặc kho lưu trữ đầy.</p>
       <div class="row" style="margin-top:7px">
         <button id="trendLearnBtn" style="background:linear-gradient(135deg,#0A84FF 0%,#5E5CE7 100%);color:#fff">▶ Học bài từ nhóm đã tích</button>
         <button id="trendLearnStopBtn" style="background:#e4e6eb;color:#050505">⏹ Dừng</button>
@@ -527,7 +655,7 @@ Nội dung bài gốc: {postText}</textarea>
       </div>
       <div id="trendOutline" class="hidden" style="margin-top:7px;border:1px solid #90caf9;border-radius:8px;padding:10px;background:#e3f2fd;white-space:pre-wrap;word-break:break-word;font-size:12px"></div>
       <div id="trendPreview" class="hidden" style="margin-top:7px;border:1px solid #a5d6a7;border-radius:8px;padding:10px;background:#f1f8e9;white-space:pre-wrap;word-break:break-word"></div>
-      <p class="hint" data-i18n="trend2.learnFlowHint">Chọn nguồn học ở trên. Học = lưu bài mới nhất vào máy (tối đa 300 bài). Viết lại = AI đọc bài đã lưu và viết thành bài của bạn, không đăng ngay.</p>
+      <p class="hint" data-i18n="trend2.learnFlowHint">Chọn nguồn học ở trên. Học = lưu bài mới nhất vào máy, không giới hạn số bài cố định. Viết lại = AI đọc bài đã lưu và viết thành bài của bạn, không đăng ngay.</p>
     </div>
     <div class="card">
       <h3 style="margin:0 0 6px;font-size:14px;color:#0d47a1">📮 B2. Chọn nhóm đích để đăng bài viết lại</h3>
@@ -539,6 +667,14 @@ Nội dung bài gốc: {postText}</textarea>
         <option value="sequential" data-i18n="trend2.postSourceModeSequential">Dùng lần lượt bài còn lại</option>
       </select>
       <p class="hint" data-i18n="trend2.postSourceModeHint">Chế độ tích: chỉ dùng các bài đã chọn ở B1. Chế độ lần lượt: mỗi lượt lấy các bài còn lại từ mới nhất; bài chỉ bị xóa sau khi Facebook xác nhận đăng thành công.</p>
+      <div id="trendDistributionModes" style="margin-top:8px;border:1px solid #c7dcff;border-radius:9px;padding:8px;background:#f5f9ff">
+        <label style="display:block;font-weight:700;color:#0d47a1;margin-bottom:5px" data-i18n="trend2.distributionTitle">Cách phân bài đã tích ở B1</label>
+        <label style="display:flex;align-items:flex-start;gap:7px;margin:5px 0"><input class="trend-distribution-mode" name="trendDistributionMode" type="radio" value="auto" checked style="width:auto;margin-top:3px"><span data-i18n="trend2.distributionAuto">Tự nhận diện theo số bài và số nhóm</span></label>
+        <label style="display:flex;align-items:flex-start;gap:7px;margin:5px 0"><input class="trend-distribution-mode" name="trendDistributionMode" type="radio" value="many-to-one" style="width:auto;margin-top:3px"><span data-i18n="trend2.distributionManyOne">Nhiều bài → 1 nhóm</span></label>
+        <label style="display:flex;align-items:flex-start;gap:7px;margin:5px 0"><input class="trend-distribution-mode" name="trendDistributionMode" type="radio" value="one-to-many" style="width:auto;margin-top:3px"><span data-i18n="trend2.distributionOneMany">1 bài → nhiều nhóm</span></label>
+        <label style="display:flex;align-items:flex-start;gap:7px;margin:5px 0"><input class="trend-distribution-mode" name="trendDistributionMode" type="radio" value="many-to-many" style="width:auto;margin-top:3px"><span data-i18n="trend2.distributionManyMany">Nhiều bài → nhiều nhóm, tự chia đều</span></label>
+        <p id="trendDistributionHint" class="hint" style="margin:6px 0 0" data-i18n="trend2.distributionHint">Chỉ chọn một cách. Hệ thống kiểm tra số bài/số nhóm đúng với cách đã chọn trước khi gọi AI hoặc đăng.</p>
+      </div>
       <div class="row"><button id="selectAllTrendTargetBtn" style="background:#e4e6eb;color:#050505">☑ Chọn tất cả đích</button></div>
       <label>Lọc nhóm đích</label>
       <input id="trendTargetKeyword" type="text" placeholder="VD: mua bán, công nghệ">
@@ -582,9 +718,10 @@ Nội dung bài gốc: {postText}</textarea>
         </div>
       </div>
       <div class="row" style="margin-top:8px">
-        <div><label data-i18n="trend2.postsPerGroup">Số bài đăng mỗi nhóm</label><input id="trendPostsPerGroup" type="number" min="1" max="30" value="1"></div>
+        <div id="trendPostsPerGroupWrap"><label data-i18n="trend2.postsPerGroup">Số bài mỗi nhóm (chế độ dùng lần lượt)</label><input id="trendPostsPerGroup" type="number" min="1" max="30" value="1"></div>
         <div><label data-i18n="trend2.targetGroups">Số nhóm muốn đăng</label><input id="trendTargetGroups" type="number" min="1" max="500" value="3"></div>
       </div>
+      <div id="trendPostPlan" class="hint" style="margin-top:7px" data-i18n="trend2.planEmpty">Tích bài ở B1 và chọn nhóm đích để xem kế hoạch tự động.</div>
       <div class="row" style="margin-top:8px">
         <div><label data-i18n="trend2.postDelay">Giãn cách giữa mỗi bài đăng (giây)</label><input id="trendPostDelay" type="number" min="5" max="3600" value="30"></div>
       </div>
@@ -594,7 +731,7 @@ Nội dung bài gốc: {postText}</textarea>
       </div>
       <button id="trendPostResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6">↺ Reset đăng</button>
       <div id="trendAiSummary" class="hint" style="margin-top:7px">AI dùng chung cấu hình đã lưu trong dự án.</div>
-      <p class="hint" data-i18n="trend2.postRunHint">Mỗi nhóm đích nhận số bài theo cấu hình, mỗi bài là một biến thể riêng từ bài đã học. Bộ đếm chỉ tăng khi Facebook xác nhận đã đăng.</p>
+      <p class="hint" data-i18n="trend2.postRunHint">Khi dùng bài đã tích: 1 bài được dùng cho nhiều nhóm; từ 2 bài trở lên được tự chia đều cho các nhóm, không trùng bài nguồn. Chế độ dùng lần lượt mới dùng ô số bài mỗi nhóm. Bộ đếm chỉ tăng khi Facebook xác nhận đã đăng.</p>
     </div>
   </div>
 
