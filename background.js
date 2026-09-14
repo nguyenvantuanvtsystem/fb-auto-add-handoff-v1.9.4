@@ -2,7 +2,7 @@
 try { importScripts("i18n.js", "pageStore.js"); } catch (_) { }
 const AI_DEFAULTS = {
   openai: { url: "https://api.openai.com/v1/chat/completions", model: "gpt-4o-mini" },
-  gemini: { url: "https://generativelanguage.googleapis.com/v1beta/interactions", model: "gemini-flash-lite-latest" },
+  gemini: { url: "https://generativelanguage.googleapis.com/v1beta/models", model: "gemini-flash-lite-latest" },
   Muse: { url: "https://api.anthropic.com/v1/messages", model: "claude-3-haiku-20240307" },
   groq: { url: "https://api.groq.com/openai/v1/chat/completions", model: "llama-3.1-8b-instant" },
   openrouter: { url: "https://openrouter.ai/api/v1/chat/completions", model: "openai/gpt-4o-mini" },
@@ -35,7 +35,9 @@ function sliceByCodePoints(value,max){
   return chars.length>max?chars.slice(0,max).join(""):chars.join("");
 }
 function normalizeBackgroundMaxChars(value){
-  return Math.min(140,Math.max(40,parseInt(value)||100));
+  // Facebook drops colored backgrounds once the post exceeds its practical
+  // 130-character limit, even though the composer can still accept text.
+  return Math.min(130,Math.max(40,parseInt(value)||100));
 }
 function backgroundTargetRange(value){
   const max=normalizeBackgroundMaxChars(value);
@@ -125,11 +127,14 @@ function cleanSalesPost(raw){
 }
 // Học bài nhóm (trend): đọc bài đã cào từ nhóm nguồn, rút dàn ý rồi viết
 // thành bài của mình cho nhóm đích. Không sao chép nguyên văn/giả mạo.
-function strictTrendRewritePrompt(template,sourceText,groupName,variant){
+function strictTrendRewritePrompt(template,sourceText,groupName,variant,background={}){
+  const sentenceRule=background?.enabled
+    ?" Với bài đăng nền màu, chỉ viết 1-2 câu hoàn chỉnh; ưu tiên chủ đề và một ý chính rõ ràng, chỉ thêm câu hỏi khi còn đủ chỗ."
+    :" Viết 2-5 câu tự nhiên.";
   return String(template||"")
     +"\n\nBỐI CẢNH: Nhóm đích là \""+String(groupName||"").slice(0,180)+"\"; đây là biến thể số "+Math.max(1,parseInt(variant)||1)+"."
     +"\nBÀI ĐÃ HỌC TỪ NHÓM NGUỒN:\n"+String(sourceText||"").slice(0,6000)
-    +"\nYÊU CẦU AN TOÀN: Đọc các bài trên để nắm dàn ý, góc nhìn và điểm được quan tâm, sau đó viết thành bài của chính mình theo dàn ý đó. Không sao chép nguyên văn câu nào, không bịa tên/người/giá/số liệu, không mạo danh tác giả, không giật tít, không spam, không lặp nguyên văn giữa các biến thể, không hashtag, không URL, không Markdown, không lời giải thích của AI. Chỉ trả về duy nhất nội dung bài đăng bằng tiếng Việt, 2-5 câu tự nhiên.";
+    +"\nYÊU CẦU AN TOÀN: Đọc các bài trên để nắm dàn ý, góc nhìn và điểm được quan tâm, sau đó viết thành bài của chính mình theo dàn ý đó. Không sao chép nguyên văn câu nào, không bịa tên/người/giá/số liệu, không mạo danh tác giả, không giật tít, không spam, không lặp nguyên văn giữa các biến thể, không hashtag, không URL, không Markdown, không lời giải thích của AI. Chỉ trả về duy nhất nội dung bài đăng bằng tiếng Việt."+sentenceRule;
 }
 function cleanTrendPost(raw){
   let text=String(raw||"").replace(/```[a-z]*|```/gi," ").replace(/\*\*/g,"").split(/\r?\n/).map(s=>s.trim()).filter(Boolean).join(" ");
@@ -147,12 +152,34 @@ async function repairBackgroundPost(content,background,requestText,cleaner){
   if(!background.enabled)return cleaner(content);
   const range=backgroundTargetRange(background.maxChars);
   const normalized=cleaner(content);
-  if(backgroundTextLength(normalized)<=range.max)return normalized;
-  const repairPrompt=t("bg.postBgRepair",range)+"\n\nNỘI DUNG CẦN NÉN:\n"+normalized;
-  const repaired=cleaner(await requestText(repairPrompt));
+  const initialLength=backgroundTextLength(normalized);
+  if(initialLength>=range.min&&initialLength<=range.max)return normalized;
+  const repairKey=initialLength<range.min?"bg.postBgExpand":"bg.postBgRepair";
+  const repairLabel=initialLength<range.min?"NỘI DUNG CẦN BỔ SUNG Ý":"NỘI DUNG CẦN NÉN";
+  const repairPrompt=t(repairKey,range)+`\n\n${repairLabel}:\n`+normalized;
+  let repaired=cleaner(await requestText(repairPrompt));
   if(!repaired)throw new Error(t("bg.contentEmpty"));
-  if(backgroundTextLength(repaired)>range.max)throw new Error(t("bg.postTooLong",{max:range.max}));
-  return repaired;
+  if(backgroundTextLength(repaired)<=range.max)return repaired;
+  // Một số model bám vào cận dưới của range nhưng vượt cận trên vài ký tự.
+  // Lượt hai bỏ cận dưới và yêu cầu cứng giới hạn, để 100-130 ký tự vẫn là
+  // một ý hoàn chỉnh thay vì hủy cả phiên đăng.
+  const hardLimitPrompt=t("bg.postBgHardRepair",{max:range.max})+"\n\nNỘI DUNG CẦN NÉN:\n"+repaired;
+  repaired=cleaner(await requestText(hardLimitPrompt));
+  if(!repaired)throw new Error(t("bg.contentEmpty"));
+  if(backgroundTextLength(repaired)<=range.max)return repaired;
+  // Chỉ dùng fallback cục bộ khi lấy được ít nhất một câu đã kết thúc. Không
+  // bao giờ cắt giữa câu để ép vào nền màu.
+  const completeParts=normalized.match(/[^.!?。！？]+[.!?。！？]+/g)||[];
+  let complete="";
+  for(const part of completeParts){
+    const candidate=`${complete}${part}`.trim();
+    if(backgroundTextLength(candidate)>range.max)break;
+    complete=candidate;
+  }
+  if(complete)return complete;
+  const error=new Error(t("bg.postTooLong",{max:range.max}));
+  error.backgroundTooLong=true;
+  throw error;
 }
 
 function strictGroupShareCaptionPrompt(text,recentCaptions=[]){
@@ -240,23 +267,27 @@ async function callOpenAICompatible(apiKey, url, model, postText, promptTemplate
 async function callGemini(apiKey, model, postText, promptTemplate, strictOutput=true){
   const basePrompt = (promptTemplate || t("bg.commentDefaultFull")).replace("{postText}", postText.slice(0,1500));
   const prompt=strictOutput?strictCommentPrompt(basePrompt):basePrompt.replaceAll("{groupName}",postText.slice(0,200));
-  const url = "https://generativelanguage.googleapis.com/v1beta/interactions";
+  // Gemini API keys are accepted by generateContent; Interactions requires OAuth.
+  const chosenModel=String(model||"gemini-flash-lite-latest").trim()||"gemini-flash-lite-latest";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(chosenModel)}:generateContent`;
   let res,data;
   for(let attempt=0;attempt<3;attempt++){
-    res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":apiKey},body:JSON.stringify({model:model||"gemini-flash-lite-latest",input:prompt,store:false,generation_config:{temperature:0.8,max_output_tokens:strictOutput?120:500}})});
+    res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":apiKey},body:JSON.stringify({contents:[{role:"user",parts:[{text:prompt}]}],generationConfig:{temperature:0.8,maxOutputTokens:strictOutput?120:500}})});
     data=await res.json();
     if(res.ok)break;
     const message=data.error?.message||JSON.stringify(data).slice(0,500);
     if(res.status!==429||attempt===2){
-      if(res.status===429)throw new Error(`${t("bg.quotaGemini",{model:model})} ${t("bg.detail")} ${message}`);
+      if(res.status===429)throw new Error(`${t("bg.quotaGemini",{model:chosenModel})} ${t("bg.detail")} ${message}`);
       throw new Error(message);
     }
     const retryText=JSON.stringify(data.error?.details||[]),match=retryText.match(/"retryDelay"\s*:\s*"(\d+)s"/i);
     const waitMs=Math.min(30000,Math.max(5000,(parseInt(match?.[1])||10)*1000));
     await new Promise(resolve=>setTimeout(resolve,waitMs));
   }
-  const stepText=(data.steps||[]).flatMap(s=>s.content||[]).filter(c=>c.type==="text").map(c=>c.text||"").join("\n");
-  return (data.output_text || stepText || "").trim().replace(/^["']|["']$/g,"");
+  const candidateText=(data.candidates||[]).flatMap(c=>c.content?.parts||[]).filter(p=>typeof p.text==="string").map(p=>p.text).join("\n");
+  const output=String(candidateText||"").trim().replace(/^["']|["']$/g,"");
+  if(!output)throw new Error("Gemini không trả về nội dung");
+  return output;
 }
 
 async function callClaude(apiKey, model, postText, promptTemplate, strictOutput=true){
@@ -298,7 +329,430 @@ function cleanPageGroupPost(raw){
   return sanitizePostedText(sliceByCodePoints(text,1800));
 }
 
+// ===== LỊCH CHẠY =====
+// Lịch chỉ là lớp điều phối: nó giữ một snapshot cấu hình của *một* feature
+// và đến giờ gọi lại đúng message Start của feature đó. Không dùng chung loop,
+// selector hay bộ đếm với các state machine ở content scripts.
+const SCHEDULE_STORAGE_KEY="scheduledTasks";
+const SCHEDULE_ALARM_PREFIX="fb-auto-schedule:";
+// Khi service worker vừa thức dậy đúng lúc alarm đến hạn, onAlarm và
+// restoreScheduleAlarms() có thể chạy cạnh nhau. Cho phép alarm được dựng
+// lại trong một cửa sổ rất ngắn để không biến race này thành lịch thất bại;
+// lịch quá hạn thật sự vẫn bị đánh dấu failed bên dưới.
+const SCHEDULE_RESTORE_GRACE_MS=15000;
+const SCHEDULE_ACTIVE_KEYS=["isRunning","friendConfirmActive","friendFoFActive","friendFoFScanActive","isScraping","isFeedInteracting","isAICommenting","groupInteractActive","groupCommentActive","groupPostActive","isGroupJoining","isDiscoverJoining","groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"];
+const SCHEDULE_FEATURES=new Set(["friend","scrape","feed","aiFeed","groupInteract","groupComment","groupPost","keyword","discover","share","sales","trendLearn","trendPost","pageGroupJoin","pageGroupPost","pageWatch","pageComment"]);
+const SCHEDULE_ACTIVE_BY_FEATURE={friend:"isRunning",scrape:"isScraping",feed:"isFeedInteracting",aiFeed:"isAICommenting",groupInteract:"groupInteractActive",groupComment:"groupCommentActive",groupPost:"groupPostActive",keyword:"isGroupJoining",discover:"isDiscoverJoining",share:"groupShareActive",sales:"salesPostActive",trendLearn:"trendLearnActive",trendPost:"trendPostActive",pageGroupJoin:"pageGroupJoinActive",pageGroupPost:"pageGroupPostActive",pageWatch:"pageWatchActive",pageComment:"pageCommentActive"};
+const SCHEDULE_GROUP_COLORS=["pink","green","red","orange","yellow","blue","purple","burgundy","beige","brown","gray","black"];
+const scheduleAlarmName=id=>SCHEDULE_ALARM_PREFIX+id;
+const scheduleSafeText=(value,max=1000)=>String(value||"").trim().slice(0,Math.max(1,Number(max)||1000));
+const scheduleConfirmWaitSeconds=value=>{
+  const parsed=Number.parseInt(value,10);
+  const seconds=Number.isFinite(parsed)?parsed:90;
+  return Math.min(600,Math.max(5,seconds));
+};
+function scheduleFacebookUrl(value,allowFbWatch=false){
+  const raw=String(value||"").trim();
+  let url;
+  try{url=new URL(raw); }catch{throw new Error("URL Facebook trong lịch không hợp lệ");}
+  const host=String(url.hostname||"").toLowerCase().replace(/\.$/,"");
+  const facebook=host==="facebook.com"||host.endsWith(".facebook.com");
+  if(!facebook&&!(allowFbWatch&&host==="fb.watch"))throw new Error("Lịch chỉ nhận URL Facebook");
+  if(!/^https?:$/.test(url.protocol))throw new Error("URL Facebook trong lịch không hợp lệ");
+  url.hash="";
+  return url.toString();
+}
+function scheduleUrlKey(value){
+  try{
+    const url=new URL(String(value||""));
+    const host=String(url.hostname||"").toLowerCase().replace(/^www\./,"");
+    return `${host}${url.pathname.replace(/\/+$/g,"").toLowerCase()}`;
+  }catch{return String(value||"").split(/[?#]/)[0].replace(/\/+$/g,"").toLowerCase();}
+}
+function normalizeScheduleGroup(raw={}){
+  const url=scheduleFacebookUrl(raw.url||`https://www.facebook.com/groups/${raw.id||""}/`);
+  let parsed;
+  try{parsed=new URL(url);}catch{throw new Error("Nhóm trong lịch không hợp lệ");}
+  const match=parsed.pathname.match(/^\/groups\/([^/?#]+)/i);
+  if(!match)throw new Error("Nhóm trong lịch không hợp lệ");
+  const id=String(raw.id||decodeURIComponent(match[1])||"").trim();
+  if(!id)throw new Error("Nhóm trong lịch không hợp lệ");
+  return {id,name:scheduleSafeText(raw.name||id,180),url:`https://www.facebook.com/groups/${encodeURIComponent(id)}/`,manualLink:!!raw.manualLink,explicitName:!!raw.explicitName};
+}
+function normalizeScheduleGroups(value,required=true){
+  const groups=[];
+  for(const raw of Array.isArray(value)?value:[]){
+    try{const group=normalizeScheduleGroup(raw);if(!groups.some(item=>item.id===group.id))groups.push(group);}catch{}
+  }
+  if(required&&!groups.length)throw new Error("Cần chọn ít nhất một nhóm trước khi hẹn lịch");
+  return groups.slice(0,500);
+}
+function normalizeSchedulePage(raw={}){
+  const url=scheduleFacebookUrl(raw.url);
+  return {id:scheduleSafeText(raw.id||"",180),name:scheduleSafeText(raw.name||"Trang Facebook",180),url};
+}
+function normalizeSchedulePages(value){
+  const pages=[];
+  for(const raw of Array.isArray(value)?value:[]){
+    try{const page=normalizeSchedulePage(raw);if(!pages.some(item=>scheduleUrlKey(item.url)===scheduleUrlKey(page.url)))pages.push(page);}catch{}
+  }
+  return pages.slice(0,100);
+}
+function normalizeScheduleBackground(raw={}){
+  const colors=(Array.isArray(raw.colors)?raw.colors:[]).filter(color=>SCHEDULE_GROUP_COLORS.includes(color));
+  return {enabled:!!raw.enabled,mode:raw.mode==="fixed"?"fixed":"random",fixedColor:SCHEDULE_GROUP_COLORS.includes(raw.fixedColor)?raw.fixedColor:"pink",colors:colors.length?[...new Set(colors)]:SCHEDULE_GROUP_COLORS,maxChars:Math.min(130,Math.max(40,parseInt(raw.maxChars)||100)),fallback:"skip"};
+}
+function normalizeScheduleSalesMedia(raw){
+  if(!raw||typeof raw!=="object")return null;
+  const plan=Array.isArray(raw.plan)?raw.plan.slice(0,500).map(row=>Array.isArray(row)?row.map(value=>Math.max(0,parseInt(value)||0)).slice(0,20):[]):[];
+  const manifest=Array.isArray(raw.manifest)?raw.manifest.slice(0,20).map(item=>({name:scheduleSafeText(item?.name||"media",180),type:scheduleSafeText(item?.type||"",80),size:Math.max(0,Number(item?.size)||0)})):[];
+  return {enabled:!!raw.enabled,required:!!raw.required,count:Math.max(0,Math.min(20,parseInt(raw.count)||0)),random:!!raw.random,perGroup:Math.max(1,Math.min(20,parseInt(raw.perGroup)||1)),plan,manifest};
+}
+function scheduleDefaultLabel(feature){
+  return ({friend:"Kết bạn",scrape:"Cào bài",feed:"Tương tác bản tin",aiFeed:"Comment AI bản tin",groupInteract:"Like/Random trong nhóm",groupComment:"Comment AI trong nhóm",groupPost:"Đăng bài AI lên nhóm",keyword:"Tham gia nhóm từ khóa",discover:"Tham gia nhóm khám phá",share:"Share bài vào nhóm",sales:"Đăng bài bán hàng",trendLearn:"Học bài theo Trend",trendPost:"Đăng bài Trend",pageGroupJoin:"Page tham gia nhóm",pageGroupPost:"Page đăng bài nhóm",pageWatch:"Theo dõi Page",pageComment:"Page Comment AI"}[feature]||feature);
+}
+function scheduleRestoreDecision(runAt,now=Date.now()){
+  const when=Number(runAt);
+  if(!Number.isFinite(when))return {kind:"invalid"};
+  if(when<=now){
+    if(now-when<=SCHEDULE_RESTORE_GRACE_MS)return {kind:"rearm",when:now+1000};
+    return {kind:"expired"};
+  }
+  return {kind:"rearm",when};
+}
+function scheduleId(){return "sch_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8);}
+async function scheduledTasks(){
+  const saved=await chrome.storage.local.get(SCHEDULE_STORAGE_KEY);
+  return Array.isArray(saved[SCHEDULE_STORAGE_KEY])?saved[SCHEDULE_STORAGE_KEY]:[];
+}
+async function saveScheduledTasks(tasks){await chrome.storage.local.set({[SCHEDULE_STORAGE_KEY]:tasks});}
+async function setScheduledTask(id,change){
+  const tasks=await scheduledTasks(),index=tasks.findIndex(task=>task.id===id);
+  if(index<0)return null;
+  tasks[index]={...tasks[index],...change};
+  await saveScheduledTasks(tasks);
+  return tasks[index];
+}
+function normalizeScheduledTask(raw={}){
+  const feature=SCHEDULE_FEATURES.has(raw.feature)?raw.feature:"";
+  const runAt=Number(raw.runAt);
+  if(!feature)throw new Error("Tính năng hẹn giờ chưa được hỗ trợ");
+  if(!Number.isFinite(runAt)||runAt<Date.now()+25000)throw new Error("Thời điểm chạy phải sau hiện tại ít nhất 30 giây");
+  const config=raw.config&&typeof raw.config==="object"?raw.config:{};
+  let normalized;
+  if(feature==="keyword"){
+    if(!scheduleSafeText(config.keyword))throw new Error("Cần nhập từ khóa trước khi hẹn lịch");
+    normalized={keyword:scheduleSafeText(config.keyword,180),minMembers:Math.max(0,parseInt(config.minMembers)||0),minPostsPerDay:Math.max(0,parseInt(config.minPostsPerDay)||0),targetJoin:Math.max(1,parseInt(config.targetJoin)||10),minDelay:Math.max(1,parseInt(config.minDelay)||5),maxDelay:Math.max(1,parseInt(config.maxDelay)||15),confirmWaitSeconds:scheduleConfirmWaitSeconds(config.confirmWaitSeconds),answersText:scheduleSafeText(config.answersText,4000),aiJoinEnabled:!!config.aiJoinEnabled,aiJoinPrompt:scheduleSafeText(config.aiJoinPrompt,4000)};
+  }else if(feature==="discover"){
+    normalized={target:Math.max(1,parseInt(config.target)||10),minDelay:Math.max(1,parseInt(config.minDelay)||5),maxDelay:Math.max(1,parseInt(config.maxDelay)||15),confirmWaitSeconds:scheduleConfirmWaitSeconds(config.confirmWaitSeconds),answersText:scheduleSafeText(config.answersText,4000),aiJoinEnabled:!!config.aiJoinEnabled,aiJoinPrompt:scheduleSafeText(config.aiJoinPrompt,4000)};
+  }else if(feature==="friend"){
+    if(config.mode==="friend-of-friend")throw new Error(t("sch.friendFoFUnsupported"));
+    const mode=["suggestions","group-common","confirm"].includes(config.mode)?config.mode:"suggestions";
+    normalized={mode,minDelay:Math.max(1000,parseInt(config.minDelay)||5000),maxDelay:Math.max(1000,parseInt(config.maxDelay)||15000),maxRequests:Math.max(1,Math.min(100,parseInt(config.maxRequests)||20)),minMutual:Math.max(0,parseInt(config.minMutual)||0),groups:normalizeScheduleGroups(config.groups,mode==="group-common"),confirmFilters:{minMutual:Math.max(0,Math.min(999,parseInt(config.confirmFilters?.minMutual)||0))}};
+  }else if(feature==="scrape"){
+    normalized={count:Math.max(1,Math.min(10000,parseInt(config.count)||200)),skipAds:config.skipAds!==false,sourceUrl:scheduleFacebookUrl(config.sourceUrl)};
+  }else if(feature==="feed"){
+    normalized={reaction:scheduleSafeText(config.reaction||"random",40)||"random",target:Math.max(1,Math.min(100,parseInt(config.target)||20)),minDelay:Math.max(1,parseInt(config.minDelay)||3),maxDelay:Math.max(1,parseInt(config.maxDelay)||8)};
+  }else if(feature==="aiFeed"){
+    normalized={target:Math.max(1,Math.min(100,parseInt(config.target)||10)),minDelay:Math.max(1,parseInt(config.minDelay)||10),maxDelay:Math.max(1,parseInt(config.maxDelay)||20),economyMode:scheduleSafeText(config.economyMode||"balanced",30)||"balanced",batchSize:Math.max(2,Math.min(10,parseInt(config.batchSize)||5)),cacheDays:Math.max(0,parseInt(config.cacheDays)||7)};
+  }else if(feature==="groupInteract"||feature==="groupComment"){
+    normalized={groups:normalizeScheduleGroups(config.groups),perGroup:Math.max(1,Math.min(100,parseInt(config.perGroup)||5)),minDelay:Math.max(1,parseInt(config.minDelay)||5),maxDelay:Math.max(1,parseInt(config.maxDelay)||12),reaction:scheduleSafeText(config.reaction||"random",40)||"random",targetGroups:Math.max(1,Math.min(500,parseInt(config.targetGroups)||1))};
+  }else if(feature==="groupPost"){
+    normalized={groups:normalizeScheduleGroups(config.groups),prompt:scheduleSafeText(config.prompt,4000),minDelay:Math.max(5,parseInt(config.minDelay)||25),maxDelay:Math.max(5,parseInt(config.maxDelay)||45),interGroupDelay:Math.min(3600,Math.max(5,parseInt(config.interGroupDelay)||30)),background:normalizeScheduleBackground(config.background)};
+  }else if(feature==="share"){
+    normalized={sourceUrl:scheduleFacebookUrl(config.sourceUrl,true),groups:normalizeScheduleGroups(config.groups),prompt:scheduleSafeText(config.prompt,4000),interGroupDelay:Math.min(3600,Math.max(5,parseInt(config.interGroupDelay)||30)),manualSourceText:scheduleSafeText(config.manualSourceText,6000)};
+  }else if(feature==="sales"){
+    normalized={groups:normalizeScheduleGroups(config.groups),sourceText:scheduleSafeText(config.sourceText,6000),productInfo:scheduleSafeText(config.productInfo,3000),prompt:scheduleSafeText(config.prompt,4000),interGroupDelay:Math.min(3600,Math.max(5,parseInt(config.interGroupDelay)||45)),styleProfileId:scheduleSafeText(config.styleProfileId,180),acceptedChatPosts:(Array.isArray(config.acceptedChatPosts)?config.acceptedChatPosts:[]).map(value=>scheduleSafeText(value,2000)).filter(Boolean).slice(0,500),media:normalizeScheduleSalesMedia(config.media)};
+    if(!normalized.sourceText)throw new Error("Cần nhập thông tin sản phẩm trước khi hẹn lịch");
+  }else if(feature==="trendLearn"){
+    normalized={groups:normalizeScheduleGroups(config.groups),perGroup:Math.max(0,Math.min(100,parseInt(config.perGroup)||0)),unlimited:config.unlimited!==false};
+  }else if(feature==="trendPost"){
+    const groups=normalizeScheduleGroups(config.groups),jobs=(Array.isArray(config.jobs)?config.jobs:[]).map(job=>{let group;try{group=normalizeScheduleGroup(job?.group||{});}catch{return null;}return {group,groupIndex:Math.max(0,parseInt(job.groupIndex)||0),postIndex:Math.max(0,parseInt(job.postIndex)||0),groupPostTotal:Math.max(1,parseInt(job.groupPostTotal)||1),sourcePostIds:(Array.isArray(job.sourcePostIds)?job.sourcePostIds:[]).map(value=>scheduleSafeText(value,300)).filter(Boolean).slice(0,20),sourceText:scheduleSafeText(job.sourceText,1200),draft:scheduleSafeText(job.draft,2000),variant:Math.max(1,parseInt(job.variant)||1)};}).filter(Boolean);
+    if(!jobs.length)throw new Error("Cần có bài đã học và nhóm đích trước khi hẹn lịch Trend");
+    normalized={groups,jobs,drafts:(Array.isArray(config.drafts)?config.drafts:[]).map(value=>scheduleSafeText(value,2000)).slice(0,500),sourceText:scheduleSafeText(config.sourceText,6000),sourcePostIds:(Array.isArray(config.sourcePostIds)?config.sourcePostIds:[]).map(value=>scheduleSafeText(value,300)).filter(Boolean).slice(0,500),sourceMode:config.sourceMode==="sequential"?"sequential":"selected",distribution:scheduleSafeText(config.distribution||"auto",40)||"auto",postsPerGroup:Math.max(1,Math.min(30,parseInt(config.postsPerGroup)||1)),postDelay:Math.min(3600,Math.max(5,parseInt(config.postDelay)||30)),prompt:scheduleSafeText(config.prompt,4000),styleProfileId:scheduleSafeText(config.styleProfileId,180),interDelay:Math.min(3600,Math.max(5,parseInt(config.interDelay)||30)),anonymousMode:config.anonymousMode!==false,background:normalizeScheduleBackground(config.background)};
+  }else if(feature==="pageGroupJoin"){
+    normalized={page:normalizeSchedulePage(config.page),mode:config.mode==="discover"?"discover":"keyword",keyword:scheduleSafeText(config.keyword,180),target:Math.max(1,Math.min(100,parseInt(config.target)||10)),minDelay:Math.max(5,Math.min(3600,parseInt(config.minDelay)||15)),maxDelay:Math.max(5,Math.min(3600,parseInt(config.maxDelay)||30)),answers:Array.isArray(config.answers)?config.answers.map(value=>scheduleSafeText(value,500)).filter(Boolean).slice(0,30):[],aiEnabled:!!config.aiEnabled,aiPrompt:scheduleSafeText(config.aiPrompt,4000)};
+    if(normalized.mode==="keyword"&&!normalized.keyword)throw new Error("Cần nhập từ khóa Page trước khi hẹn lịch");
+  }else if(feature==="pageGroupPost"){
+    normalized={page:normalizeSchedulePage(config.page),groups:normalizeScheduleGroups(config.groups),target:Math.max(1,Math.min(100,parseInt(config.target)||1)),minDelay:Math.max(5,Math.min(3600,parseInt(config.minDelay)||30)),maxDelay:Math.max(5,Math.min(3600,parseInt(config.maxDelay)||60)),prompt:scheduleSafeText(config.prompt,4000)};
+  }else if(feature==="pageWatch"){
+    normalized={page:normalizeSchedulePage(config.page),keyword:scheduleSafeText(config.keyword,180),target:Math.max(1,Math.min(100,parseInt(config.target)||10)),minFollowers:Math.max(0,parseInt(config.minFollowers)||0),exclude:scheduleSafeText(config.exclude,1000)};
+    if(!normalized.keyword)throw new Error("Cần nhập từ khóa theo dõi Page trước khi hẹn lịch");
+  }else if(feature==="pageComment"){
+    normalized={page:normalizeSchedulePage(config.page),source:config.source==="followed"?"followed":"feed",pages:normalizeSchedulePages(config.pages),target:Math.max(1,Math.min(100,parseInt(config.target)||10)),minDelay:Math.max(5,Math.min(3600,parseInt(config.minDelay)||20)),maxDelay:Math.max(5,Math.min(3600,parseInt(config.maxDelay)||45)),prompt:scheduleSafeText(config.prompt,4000)};
+    if(normalized.source==="followed"&&!normalized.pages.length)throw new Error("Cần có Page đã theo dõi trước khi hẹn lịch Comment");
+  }
+  return {
+    id:scheduleId(),feature,label:scheduleSafeText(raw.label,120)||scheduleDefaultLabel(feature),runAt,createdAt:Date.now(),status:"scheduled",config:normalized
+  };
+}
+async function hasActiveFeature(){const state=await chrome.storage.local.get(SCHEDULE_ACTIVE_KEYS);return SCHEDULE_ACTIVE_KEYS.some(key=>!!state[key]);}
+async function scheduleAiConfig(){return getPageAiConfig({});}
+async function scheduleFacebookTab(){
+  const tabs=await chrome.tabs.query({url:["*://*.facebook.com/*"]});
+  const tab=tabs.find(item=>item.active)||tabs[0];
+  // Need a tab id before persisting ownerTabId. A blank tab is intentional:
+  // state must be written before the Facebook content script can load.
+  if(tab?.id!==undefined)return {id:tab.id};
+  return chrome.tabs.create({url:"about:blank",active:true});
+}
+async function navigateScheduledTab(tabId,url,timeout=18000){
+  return new Promise(resolve=>{
+    let done=false;
+    const finish=ok=>{if(done)return;done=true;chrome.tabs.onUpdated.removeListener(onUpdated);clearTimeout(timer);resolve(ok);};
+    const onUpdated=(id,info)=>{if(id===tabId&&info.status==="complete")finish(true);};
+    const timer=setTimeout(()=>finish(false),timeout);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.update(tabId,{url,active:true}).catch(()=>finish(false));
+  });
+}
+const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function sendScheduledTabMessage(tabId,message){
+  return new Promise(resolve=>chrome.tabs.sendMessage(tabId,message,result=>resolve(chrome.runtime.lastError?null:result)));
+}
+async function sendScheduledStart(tabId,message,attempts=12){
+  // `tabs.onUpdated: complete` can arrive before a Facebook content script is
+  // ready after a cold extension/service-worker wake. Retrying a message that
+  // was not delivered is safe; once it is delivered we stop immediately, so a
+  // Join/Post action is never retried by this helper.
+  for(let attempt=0;attempt<attempts;attempt++){
+    const response=await sendScheduledTabMessage(tabId,message);
+    if(response!==null)return response;
+    await wait(650);
+  }
+  return null;
+}
+function scheduledActiveKey(task){
+  return task.feature==="friend"&&task.config?.mode==="confirm"?"friendConfirmActive":SCHEDULE_ACTIVE_BY_FEATURE[task.feature];
+}
+function scheduledScrapeSourceKey(value){
+  try{const url=new URL(String(value||"")),host=String(url.hostname||"").toLowerCase().replace(/\.$/,"");return `https://${host==="facebook.com"||host.endsWith(".facebook.com")?"facebook.com":host}${url.pathname}`.replace(/\/$/,"").toLowerCase();}catch{return scheduleUrlKey(value);}
+}
+function scheduledTargetUrl(task,cfg){
+  switch(task.feature){
+    case "friend":
+      if(cfg.mode==="suggestions")return "https://www.facebook.com/friends/suggestions";
+      if(cfg.mode==="confirm")return "https://www.facebook.com/friends/requests";
+      return `https://www.facebook.com/groups/${encodeURIComponent(cfg.groups[0].id)}/members/`;
+    case "scrape":return cfg.sourceUrl;
+    case "feed":case "aiFeed":return "https://www.facebook.com/";
+    case "keyword":return "https://www.facebook.com/search/groups/?q="+encodeURIComponent(cfg.keyword);
+    case "discover":return "https://www.facebook.com/groups/discover";
+    case "groupInteract":case "groupComment":case "groupPost":case "sales":case "trendLearn":case "trendPost":case "pageGroupPost":return cfg.groups[0].url;
+    case "share":return cfg.sourceUrl;
+    case "pageGroupJoin":return cfg.mode==="discover"?"https://www.facebook.com/groups/discover":"https://www.facebook.com/search/groups/?q="+encodeURIComponent(cfg.keyword);
+    case "pageWatch":return "https://www.facebook.com/search/pages/?q="+encodeURIComponent(cfg.keyword);
+    case "pageComment":return cfg.source==="feed"?"https://www.facebook.com/":cfg.pages[0].url;
+    default:return "https://www.facebook.com/";
+  }
+}
+function scheduledRouteMatches(task,cfg,url){
+  try{
+    const current=new URL(String(url||"")),host=current.hostname.toLowerCase();
+    if(!(host==="facebook.com"||host.endsWith(".facebook.com")||host==="fb.watch"))return false;
+    const path=current.pathname.replace(/\/+$/g,"").toLowerCase()||"/";
+    switch(task.feature){
+      case "friend":
+        if(cfg.mode==="suggestions")return path==="/friends/suggestions";
+        if(cfg.mode==="confirm")return path==="/friends/requests";
+        return path.startsWith(`/groups/${String(cfg.groups[0].id).toLowerCase()}/members`);
+      case "scrape":return scheduledScrapeSourceKey(url)===scheduledScrapeSourceKey(cfg.sourceUrl);
+      case "feed":case "aiFeed":return path==="/"||path==="/home.php";
+      case "keyword":return path.startsWith("/search/groups")&&current.searchParams.get("q")===cfg.keyword;
+      case "discover":return path==="/groups/discover";
+      case "groupInteract":case "groupComment":case "groupPost":case "sales":case "trendLearn":case "trendPost":case "pageGroupPost":return scheduleUrlKey(url)===scheduleUrlKey(cfg.groups[0].url);
+      case "share":return true; // Facebook canonicalizes /share/* and fb.watch before share.js resolves the source.
+      case "pageGroupJoin":return cfg.mode==="discover"?path==="/groups/discover":path.startsWith("/search/groups")&&current.searchParams.get("q")===cfg.keyword;
+      case "pageWatch":return path.startsWith("/search/pages")&&current.searchParams.get("q")===cfg.keyword;
+      case "pageComment":return cfg.source==="feed"?(path==="/"||path==="/home.php"):scheduleUrlKey(url)===scheduleUrlKey(cfg.pages[0].url);
+      default:return false;
+    }
+  }catch{return false;}
+}
+async function persistScheduledFeatureState(task,cfg,tabId,runId){
+  const ownerCfg={...cfg,ownerTabId:tabId,runId};
+  switch(task.feature){
+    case "friend":{
+      const delay=Number(cfg.minDelay)||5000;
+      if(cfg.mode==="confirm"){
+        await chrome.storage.local.set({friendConfirmActive:true,friendConfirmAccepted:0,friendConfirmSkipped:0,friendConfirmUncertain:0,friendConfirmRunState:{active:true,runId,ownerTabId:tabId,mode:cfg.mode,config:cfg,acceptedCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],emptyRounds:0,sourceReloads:0,nextAllowedAt:Date.now()+delay,status:t("sch.launching"),startedAt:Date.now()},friendConfirmStatus:t("sch.launching")});
+      }else{
+        await chrome.storage.local.set({isRunning:true,sentCount:0,friendSkipped:0,friendUncertain:0,friendRunState:{active:true,runId,ownerTabId:tabId,mode:cfg.mode,config:cfg,sentCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],groupIndex:0,emptyRounds:0,sourceReloads:0,nextAllowedAt:Date.now()+delay,groupWaitKey:"",groupWaitStartedAt:0,status:t("sch.launching"),startedAt:Date.now()},friendStatus:t("sch.launching"),lastMessage:t("sch.launching")});
+      }
+      break;
+    }
+    case "scrape":
+      await chrome.storage.local.set({isScraping:true,scrapeTarget:cfg.count,scrapeOwnerTabId:tabId,scrapeRunSourceUrl:scheduledScrapeSourceKey(cfg.sourceUrl),scrapeRequestedSourceUrl:cfg.sourceUrl,scrapeSkipAds:cfg.skipAds,scrapeStartedAt:Date.now(),scrapeStatus:t("sch.launching"),scrapeCount:0,scrapeReady:false,scrapeHasData:false});
+      break;
+    case "feed":
+      await chrome.storage.local.set({isFeedInteracting:true,pendingFeedInteract:true,pendingFeedConfig:{...ownerCfg},feedStatus:t("sch.launching")});
+      break;
+    case "aiFeed":
+      await chrome.storage.local.set({isAICommenting:true,pendingAIComment:true,pendingAIConfig:{...ownerCfg},aiCount:0,aiFeedReloadAttempts:0,aiStatus:t("sch.launching")});
+      break;
+    case "groupInteract":
+      await chrome.storage.local.set({groupInteractActive:true,groupInteractRunId:runId,groupInteractConfig:ownerCfg,groupInteractIndex:0,groupInteractDone:0,groupInteractAiDone:0,groupInteractTotal:cfg.groups.length*cfg.perGroup,groupInteractCurrentGroupIndex:0,groupInteractCurrentGroupDone:0,groupInteractCurrentGroupAiDone:0,groupInteractReactedKeys:{},groupInteractReactionGuard:{},groupInteractCommentGuard:{},groupInteractStatus:t("sch.launching")});
+      break;
+    case "groupComment":
+      await chrome.storage.local.set({groupCommentActive:true,groupCommentRunId:runId,groupCommentConfig:ownerCfg,groupCommentIndex:0,groupCommentDone:0,groupCommentTotal:cfg.groups.length*cfg.perGroup,groupCommentCurrentGroupIndex:0,groupCommentCurrentGroupDone:0,groupCommentHistory:{},groupCommentSubmissionGuard:{},groupCommentProcessedKeys:[],groupCommentRetryCounts:{},groupCommentSkipped:{},groupCommentStatus:t("sch.launching")});
+      break;
+    case "groupPost":
+      await chrome.storage.local.set({groupPostActive:true,groupPostRunId:runId,groupPostConfig:ownerCfg,groupPostIndex:0,groupPostDone:0,groupPostSkipped:0,groupPostTotal:cfg.groups.length,groupPostNextAt:0,groupPostLastColor:"",groupPostRetryCount:0,groupPostPendingContent:"",groupPostPendingIndex:-1,groupPostStage:"",groupPostSubmitRunId:"",groupPostSubmitIndex:-1,groupPostSubmitDispatchedAt:0,groupPostStatus:t("sch.launching")});
+      break;
+    case "keyword":
+      await chrome.storage.local.set({isGroupJoining:true,groupJoined:0,groupFound:0,groupJoinRunConfig:ownerCfg,groupStatus:t("sch.launching")});
+      break;
+    case "discover":
+      await chrome.storage.local.set({isDiscoverJoining:true,discoverJoined:0,discoverRunConfig:ownerCfg,discoverStatus:t("sch.launching")});
+      break;
+    case "share":
+      await chrome.storage.local.set({groupShareActive:true,groupShareConfig:ownerCfg,groupShareRunId:runId,groupShareOwnerTabId:tabId,groupShareStage:cfg.manualSourceText?"groups":"source",groupShareSourceText:cfg.manualSourceText||"",groupShareSourceKey:"",groupShareSourceResolvedUrl:cfg.manualSourceText?cfg.sourceUrl:"",groupShareSourceMediaKeys:[],groupSharePreviewRejected:false,groupSharePreviewKey:"",groupSharePreviewLinks:[],groupSharePreviewImages:[],groupShareSourceNavigationAt:Date.now(),groupShareIndex:0,groupShareDone:0,groupShareSkipped:0,groupShareTotal:cfg.groups.length,groupShareNextAt:0,groupSharePendingCaption:"",groupSharePendingIndex:-1,groupShareRecentCaptions:[],groupShareSubmitDispatchedAt:0,groupShareStatus:t("sch.launching")});
+      break;
+    case "sales":
+      await chrome.storage.local.set({salesPostActive:true,salesPostRunId:runId,salesPostOwnerTabId:tabId,salesPostConfig:ownerCfg,salesPostIndex:0,salesPostDone:0,salesPostSkipped:0,salesPostTotal:cfg.groups.length,salesPostNextAt:0,salesPostPendingContent:"",salesPostPendingIndex:-1,salesPostStage:"",salesPostProofSeenAt:0,salesPostProofMethod:"",salesPostSubmitIndex:-1,salesPostSubmitDispatchedAt:0,salesPostStatus:t("sch.launching")});
+      break;
+    case "trendLearn":
+      await chrome.storage.local.set({trendLearnActive:true,trendLearnRunId:runId,trendLearnOwnerTabId:tabId,trendLearnConfig:ownerCfg,trendLearnIndex:0,trendLearnPosts:[],trendLearnCount:0,trendLearnReady:false,trendLearnOutline:"",trendRewriteDrafts:[],trendLastDiag:null,trendLearnStatus:t("sch.launching")});
+      break;
+    case "trendPost":
+      await chrome.storage.local.set({trendPostActive:true,trendPostRunId:runId,trendPostOwnerTabId:tabId,trendPostConfig:ownerCfg,trendPostIndex:0,trendPostDone:0,trendPostSkipped:0,trendPostTotal:cfg.jobs.length,trendPostNextAt:0,trendPostLastColor:"",trendPostStage:"",trendPostSubmitIndex:-1,trendPostSubmitDispatchedAt:0,trendPostAnonymousMode:cfg.anonymousMode?"anonymous":"normal",trendPostStatus:t("sch.launching")});
+      break;
+    case "pageGroupJoin":
+      await chrome.storage.local.set({pageGroupJoinActive:true,pageGroupJoinRunId:runId,pageGroupJoinOwnerTabId:tabId,pageGroupJoinConfig:ownerCfg,pageGroupJoinRunState:{active:true,runId,ownerTabId:tabId,config:ownerCfg,joined:0,skipped:0,attemptedKeys:[],nextAllowedAt:Date.now()+cfg.minDelay*1000,status:t("sch.launching")},pageGroupJoinJoined:0,pageGroupJoinSkipped:0,pageGroupJoinAttemptedKeys:[],pageGroupJoinNextAt:Date.now()+cfg.minDelay*1000,pageGroupJoinStatus:t("sch.launching")});
+      break;
+    case "pageGroupPost":
+      await chrome.storage.local.set({pageGroupPostActive:true,pageGroupPostRunId:runId,pageGroupPostOwnerTabId:tabId,pageGroupPostConfig:ownerCfg,pageGroupPostDone:0,pageGroupPostSkipped:0,pageGroupPostIndex:0,pageGroupPostStatus:t("sch.launching")});
+      break;
+    case "pageWatch":
+      await chrome.storage.local.set({pageWatchActive:true,pageWatchRunId:runId,pageWatchOwnerTabId:tabId,pageWatchConfig:ownerCfg,pageWatchFollowed:0,pageWatchSkipped:0,pageWatchIndex:0,pageWatchSeenKeys:[],pageWatchStatus:t("sch.launching")});
+      break;
+    case "pageComment":
+      await chrome.storage.local.set({pageCommentActive:true,pageCommentRunId:runId,pageCommentOwnerTabId:tabId,pageCommentConfig:ownerCfg,pageCommentDone:0,pageCommentPageIndex:0,pageCommentStatus:t("sch.launching")});
+      break;
+  }
+}
+function scheduledStartMessage(task,cfg,tabId){
+  const base={ownerTabId:tabId};
+  switch(task.feature){
+    case "friend":return {action:cfg.mode==="confirm"?"friendConfirmStart":"friendStart",config:cfg,...base};
+    case "scrape":return {action:"startScrape",count:cfg.count,skipAds:cfg.skipAds,sourceUrl:cfg.sourceUrl,...base};
+    case "feed":return {action:"startFeedInteract",...cfg,...base};
+    case "aiFeed":return {action:"startAIComment",...cfg,...base};
+    case "groupInteract":return {action:"startGroupInteract",...cfg,...base};
+    case "groupComment":return {action:"startGroupComment",...cfg,...base};
+    case "groupPost":return {action:"startGroupPost",...cfg,...base};
+    case "keyword":return {action:"startGroupJoin",...cfg,...base};
+    case "discover":return {action:"startDiscoverJoin",...cfg,...base};
+    case "share":return {action:"resumeGroupShare",...base};
+    case "sales":return {action:"startSalesPost",runId:cfg.runId,config:cfg,...base};
+    case "trendLearn":return {action:"startTrendLearn",runId:cfg.runId,config:cfg,...base};
+    case "trendPost":return {action:"startTrendPost",runId:cfg.runId,config:cfg,...base};
+    case "pageGroupJoin":return {action:"startPageGroupJoin",config:cfg,joined:0,skipped:0,attemptedKeys:[],nextAllowedAt:Date.now()+cfg.minDelay*1000,...base};
+    case "pageGroupPost":return {action:"startPageGroupPost",config:cfg,runId:cfg.runId,...base};
+    case "pageWatch":return {action:"startPageWatch",config:cfg,runId:cfg.runId,followed:0,skipped:0,seenKeys:[],...base};
+    case "pageComment":return {action:"startPageComment",config:cfg,runId:cfg.runId,...base};
+    default:return null;
+  }
+}
+async function waitScheduledFeatureActive(tabId,task,timeout=9000){
+  const activeKey=scheduledActiveKey(task)||task.feature;
+  const until=Date.now()+timeout;
+  while(Date.now()<until){
+    const state=await chrome.storage.local.get(activeKey);
+    if(state[activeKey])return true;
+    await wait(650);
+  }
+  return false;
+}
+async function launchScheduledTask(task){
+  if(task.feature==="friend"&&task.config?.mode==="friend-of-friend")throw new Error(t("sch.friendFoFUnsupported"));
+  if(await hasActiveFeature())throw new Error("Đang có một tính năng khác chạy");
+  const aiConfig=await scheduleAiConfig();
+  const cfg={...task.config,aiConfig,runId:`schedule-${task.feature}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`};
+  const safeAi={provider:aiConfig.provider,model:aiConfig.model,url:aiConfig.url};
+  const safeCfg={...task.config,aiConfig:safeAi,runId:cfg.runId};
+  const runtimeCfg=task.feature==="keyword"||task.feature==="discover"?cfg:safeCfg;
+  const url=scheduledTargetUrl(task,runtimeCfg);
+  const tab=await scheduleFacebookTab();
+  if(!tab?.id)throw new Error("Không mở được tab Facebook");
+  await persistScheduledFeatureState(task,runtimeCfg,tab.id,cfg.runId);
+  // Persist first, subscribe to onUpdated second, then navigate. This makes
+  // automatic resume and the direct Start message reliable after a cold load.
+  const loaded=await navigateScheduledTab(tab.id,url);
+  const current=await chrome.tabs.get(tab.id).catch(()=>null);
+  const onExpectedRoute=!!current?.url&&scheduledRouteMatches(task,runtimeCfg,current.url);
+  if(!loaded||!onExpectedRoute)throw new Error("Tab Facebook chưa tải đúng trang của lịch");
+  const message=scheduledStartMessage(task,runtimeCfg,tab.id);
+  const response=await sendScheduledStart(tab.id,message);
+  if(response===null)throw new Error("Tab Facebook chưa nhận được lệnh khởi động");
+  const activeKey=scheduledActiveKey(task),activeState=await chrome.storage.local.get(activeKey);
+  if(response&&response.ok===false&&!activeState[activeKey])throw new Error(response.msg||response.error||"Không thể khởi động lịch");
+  if(!await waitScheduledFeatureActive(tab.id,task))throw new Error("Tab Facebook chưa giữ được phiên chạy của lịch");
+}
+async function fireScheduledTask(id){
+  const task=(await scheduledTasks()).find(item=>item.id===id);
+  if(!task||task.status!=="scheduled")return;
+  await setScheduledTask(id,{status:"starting",lastRunAt:Date.now(),error:""});
+  try{
+    await launchScheduledTask(task);
+    await setScheduledTask(id,{status:"started",startedAt:Date.now()});
+  }catch(error){
+    const blocked=/Đang có một tính năng khác chạy/.test(String(error?.message||error));
+    await setScheduledTask(id,{status:blocked?"blocked":"failed",error:scheduleSafeText(error?.message||error),finishedAt:Date.now()});
+    // Do not leave an active flag behind if this scheduler itself failed before
+    // a feature was able to receive its Start message.
+    if(!blocked){
+      const detail=String(error?.message||error);
+      const statusKey=task.feature==="friend"&&task.config?.mode==="confirm"?"friendConfirmStatus":{friend:"friendStatus",scrape:"scrapeStatus",feed:"feedStatus",aiFeed:"aiStatus",groupInteract:"groupInteractStatus",groupComment:"groupCommentStatus",groupPost:"groupPostStatus",keyword:"groupStatus",discover:"discoverStatus",share:"groupShareStatus",sales:"salesPostStatus",trendLearn:"trendLearnStatus",trendPost:"trendPostStatus",pageGroupJoin:"pageGroupJoinStatus",pageGroupPost:"pageGroupPostStatus",pageWatch:"pageWatchStatus",pageComment:"pageCommentStatus"}[task.feature];
+      await chrome.storage.local.set({[scheduledActiveKey(task)]:false,...(statusKey?{[statusKey]:t("sch.launchFailed",{error:detail})}:{})});
+    }
+  }
+}
+chrome.alarms.onAlarm.addListener(alarm=>{if(alarm.name.startsWith(SCHEDULE_ALARM_PREFIX))fireScheduledTask(alarm.name.slice(SCHEDULE_ALARM_PREFIX.length));});
+async function restoreScheduleAlarms(){
+  // Reloading an unpacked MV3 extension can discard its alarms.  Rebuild all
+  // future alarms from the durable task record instead of trusting the old
+  // alarm to still exist. This is also safe after a worker suspension.
+  const now=Date.now();
+  const tasks=await scheduledTasks();
+  let changed=false;
+  for(const task of tasks){
+    if(task.status!=="scheduled")continue;
+    const decision=scheduleRestoreDecision(task.runAt,now);
+    if(decision.kind==="invalid"){
+      task.status="failed";
+      task.error="Thời điểm lịch không hợp lệ; hãy tạo lịch mới";
+      task.finishedAt=now;
+      changed=true;
+      continue;
+    }
+    const name=scheduleAlarmName(task.id);
+    if(decision.kind==="expired"){
+      task.status="failed";
+      task.error="Đã quá giờ chạy; hãy tạo lịch mới";
+      task.finishedAt=now;
+      changed=true;
+      continue;
+    }
+    // A same-name alarm may carry a stale time from before reload.
+    await chrome.alarms.clear(name);
+    chrome.alarms.create(name,{when:decision.when});
+  }
+  if(changed)await saveScheduledTasks(tasks);
+}
+restoreScheduleAlarms().catch(()=>{});
+chrome.runtime.onStartup.addListener(()=>{restoreScheduleAlarms().catch(()=>{});});
+chrome.runtime.onInstalled.addListener(()=>{restoreScheduleAlarms().catch(()=>{});});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse)=>{
+  if(msg.action==="scheduleCreate"){
+    (async()=>{try{const task=normalizeScheduledTask(msg.task);const tasks=await scheduledTasks();tasks.push(task);await saveScheduledTasks(tasks);chrome.alarms.create(scheduleAlarmName(task.id),{when:task.runAt});sendResponse({ok:true,task});}catch(error){sendResponse({ok:false,error:String(error?.message||error)});}})();
+    return true;
+  }
+  if(msg.action==="scheduleCancel"||msg.action==="scheduleRemove"){
+    (async()=>{try{const id=String(msg.id||"");await chrome.alarms.clear(scheduleAlarmName(id));const tasks=await scheduledTasks();const index=tasks.findIndex(task=>task.id===id);if(index<0)throw new Error("Không tìm thấy lịch chạy");if(msg.action==="scheduleRemove")tasks.splice(index,1);else tasks[index]={...tasks[index],status:"cancelled",cancelledAt:Date.now()};await saveScheduledTasks(tasks);sendResponse({ok:true});}catch(error){sendResponse({ok:false,error:String(error?.message||error)});}})();
+    return true;
+  }
   if(msg.action==="pageStore"){
     (async()=>{
       try{
@@ -592,20 +1046,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse)=>{
         if(sourceText.length<30)throw new Error(t("bg.postTooShort"));
         const groupName=String(msg.groupName||"").trim().slice(0,180);
         const profileContext=await getActiveStyleContext(String(msg.styleProfileId||""));
-        const background=msg.background&&typeof msg.background==="object"&&msg.background.enabled?{enabled:true,maxChars:Math.min(140,Math.max(40,parseInt(msg.background.maxChars)||100))}:{enabled:false,maxChars:100};
+        const background=msg.background&&typeof msg.background==="object"&&msg.background.enabled?{enabled:true,maxChars:normalizeBackgroundMaxChars(msg.background.maxChars)}:{enabled:false,maxChars:100};
         const template=String(msg.prompt||"Đọc các bài đã học rồi viết thành bài của mình theo dàn ý đó cho nhóm \"{groupName}\".").replaceAll("{groupName}",groupName);
         const bgPrompt=backgroundPromptRules(background)?`\n${backgroundPromptRules(background)}`:"";
-        const prompt=strictTrendRewritePrompt([template,profileContext].filter(Boolean).join("\n\n")+bgPrompt,sourceText,groupName,msg.variant);
+        const prompt=strictTrendRewritePrompt([template,profileContext].filter(Boolean).join("\n\n")+bgPrompt,sourceText,groupName,msg.variant,background);
         let raw="";
         if(provider==="gemini")raw=await callGemini(key,model||"gemini-flash-lite-latest","",prompt,false);
         else if(provider==="claude"||provider==="Muse")raw=await callClaude(key,model,"",prompt,false);
         else{const def=AI_DEFAULTS[provider]||AI_DEFAULTS.openai;raw=await callOpenAICompatible(key,customUrl||def.url,model||def.model,"",prompt,false);}
-        let content=cleanTrendPost(raw);
-        content=await repairBackgroundPost(content,background,
-          repairPrompt=>callConfiguredText(provider,key,model,customUrl,"",repairPrompt),
-          value=>cleanTrendPost(value));
+        let content=cleanTrendPost(raw),backgroundFallback=false;
+        try{
+          content=await repairBackgroundPost(content,background,
+            repairPrompt=>callConfiguredText(provider,key,model,customUrl,"",repairPrompt),
+            value=>cleanTrendPost(value));
+        }catch(error){
+          // B2 vẫn phải đăng được nếu AI không nén vừa nền màu sau các lượt
+          // sửa. Giữ bài chữ thường đầy đủ thay vì cắt câu hoặc bỏ qua nhóm.
+          if(background.enabled&&error?.backgroundTooLong){
+            content=cleanTrendPost(raw);
+            backgroundFallback=true;
+          }else throw error;
+        }
         if(!content)throw new Error(t("bg.contentEmpty"));
-        sendResponse({ok:true,content,length:[...content].length,provider,model});
+        sendResponse({ok:true,content,length:[...content].length,backgroundEligible:!backgroundFallback&&[...content].length<=background.maxChars,backgroundFallback,provider,model});
       }catch(error){sendResponse({ok:false,error:friendlyAiError(error,msg.aiConfig?.provider||"AI")});}
     })();
     return true;
@@ -621,18 +1084,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse)=>{
         const typingMin=Math.max(0,parseInt(msg.typingMinDelay)||0);
         const typingMax=Math.max(typingMin,parseInt(msg.typingMaxDelay)||typingMin);
         if(inputText&&typingMax>0){
-          // Gõ theo code-point để không chẻ đôi emoji (surrogate pair) thành
-          // ký tự lẻ — Facebook sẽ từ chối bài chứa surrogate lẻ.
+          // Gõ theo các cụm rất nhỏ (mặc định 2 code-point) để Facebook không
+          // phải xử lý một sự kiện DOM cho từng ký tự liên tiếp. Vẫn giữ tổng
+          // nhịp nghỉ tương đương từng ký tự, nhưng giảm việc React thay
+          // composer giữa chừng và để lại bản nháp bị cắt.
           const chars=[...inputText];
-          for(let index=0;index<chars.length;index++){
-            const char=chars[index];
+          const chunkSize=Math.max(1,parseInt(msg.typingChunkSize)|| (msg.humanLike?2:1));
+          for(let index=0;index<chars.length;){
+            const chunk=chars.slice(index,index+chunkSize);
             if(msg.abortStorageKey&&index%4===0){
-              const guard=await chrome.storage.local.get([msg.abortStorageKey,"groupShareRunId"]);
-              if(!guard[msg.abortStorageKey]||(msg.abortRunId&&guard.groupShareRunId!==msg.abortRunId))throw new Error(t("bg.stoppedTyping"));
+              const runIdKey=String(msg.abortRunIdKey||"groupShareRunId");
+              const guard=await chrome.storage.local.get([msg.abortStorageKey,runIdKey]);
+              if(!guard[msg.abortStorageKey]||(msg.abortRunId&&guard[runIdKey]!==msg.abortRunId)){
+                const stopped=new Error(t("bg.stoppedTyping"));
+                stopped.code="ABORT_TYPING";
+                throw stopped;
+              }
             }
-            await chrome.debugger.sendCommand(target,"Input.insertText",{text:char});
-            const pause=typingMin+Math.floor(Math.random()*(typingMax-typingMin+1));
+            await chrome.debugger.sendCommand(target,"Input.insertText",{text:chunk.join("")});
+            let pause=0;
+            for(const char of chunk){
+              pause+=typingMin+Math.floor(Math.random()*(typingMax-typingMin+1));
+              // Comment AI dùng nhịp gõ giống người hơn: nghỉ thêm sau dấu
+              // câu và một nhịp rất ngắn sau khoảng trắng, nhưng vẫn giữ
+              // khoảng ngẫu nhiên để không tạo tốc độ máy móc.
+              if(msg.humanLike!==false&&/[,.!?;:…]/u.test(char)){
+                pause+=140+Math.floor(Math.random()*181);
+              }else if(msg.humanLike!==false&&char===" "){
+                pause+=10+Math.floor(Math.random()*31);
+              }
+            }
             if(pause>0)await new Promise(r=>setTimeout(r,pause));
+            index+=chunk.length;
           }
         }else{
           await chrome.debugger.sendCommand(target,"Input.insertText",{text:inputText});
@@ -643,7 +1126,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse)=>{
           await chrome.debugger.sendCommand(target,"Input.dispatchKeyEvent",{type:"keyUp",key:"Enter",code:"Enter",windowsVirtualKeyCode:13,nativeVirtualKeyCode:13});
         }
         sendResponse({ok:true});
-      }catch(e){ sendResponse({ok:false,error:e.message}); }
+      }catch(e){ sendResponse({ok:false,error:e.message,code:e.code||""}); }
       finally{ if(attached){try{await chrome.debugger.detach(target);}catch(_){}} }
     })().catch(e=>sendResponse({ok:false,error:e.message}));
     return true;

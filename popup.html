@@ -43,6 +43,27 @@
   .tabs .tab:hover{color:var(--ink);background:rgba(255,255,255,.55)}
   .tabs .tab.active{background:rgba(255,255,255,.94);color:var(--accent);
     box-shadow:0 3px 12px rgba(10,132,255,.22), inset 0 1px 0 #fff}
+  /* Trung tâm tiến trình chỉ là lớp quan sát state đang có; sticky để luôn
+     thấy khi người dùng đang cuộn sâu trong một tab. */
+  .run-center{position:sticky;top:6px;z-index:30;margin:0 0 12px;padding:11px;
+    border:1px solid rgba(10,132,255,.28);border-radius:16px;
+    background:rgba(244,249,255,.94);-webkit-backdrop-filter:blur(18px) saturate(1.45);backdrop-filter:blur(18px) saturate(1.45);
+    box-shadow:0 10px 28px rgba(10,132,255,.18),inset 0 1px 0 rgba(255,255,255,.94)}
+  .run-center.hidden{display:none}
+  .run-center-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 1px 8px;color:#075985;font-size:13px;font-weight:800}
+  .run-center-live{display:inline-flex;align-items:center;gap:5px;color:#0b7a35;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.35px}
+  .run-center-live::before{content:"";width:7px;height:7px;border-radius:50%;background:#34c759;box-shadow:0 0 0 4px rgba(52,199,89,.16);animation:runPulse 1.6s ease-in-out infinite}
+  @keyframes runPulse{50%{transform:scale(.72);opacity:.55}}
+  .run-center-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+  .run-card{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:9px 9px 9px 11px;
+    border:1px solid rgba(10,132,255,.17);border-radius:12px;background:rgba(255,255,255,.78);cursor:pointer;text-align:left;
+    transition:transform .15s ease,box-shadow .18s ease,border-color .18s ease}
+  .run-card:hover{transform:translateY(-1px);border-color:rgba(10,132,255,.42);box-shadow:0 5px 15px rgba(10,132,255,.13)}
+  .run-card-title{display:flex;align-items:baseline;gap:7px;min-width:0;font-size:12px;font-weight:800;color:var(--ink)}
+  .run-card-progress{flex:none;color:#0874d1;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .run-card-status{margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-soft);font-size:10px;line-height:1.35}
+  .run-card-stop{width:auto;min-width:62px;padding:7px 9px;border-radius:9px;background:#ffebe6;color:#b42318;border-color:rgba(180,35,24,.18);box-shadow:none;font-size:11px}
+  .run-card-stop:hover{box-shadow:none}
   /* Frosted cards with specular top light */
   .card{position:relative;background:var(--glass);
     -webkit-backdrop-filter:blur(22px) saturate(1.6);backdrop-filter:blur(22px) saturate(1.6);
@@ -65,6 +86,12 @@
   input[type="checkbox"]{width:16px;height:16px;accent-color:var(--accent)}
   .row{display:flex;gap:8px}
   .row>div{flex:1}
+  .feature-schedule{margin-top:9px;padding:9px;border:1px solid rgba(123,31,162,.22);border-radius:12px;background:rgba(255,255,255,.38)}
+  .feature-schedule label{margin:0 0 4px;color:#6a1b9a;font-size:11px;font-weight:700}
+  .feature-schedule .row{align-items:end}
+  .feature-schedule .row>input{flex:1;min-width:0}
+  .feature-schedule .row>button{flex:1.15;min-width:0;background:linear-gradient(135deg,#7b1fa2,#ba68c8);color:#fff;border-color:rgba(255,255,255,.35)}
+  .feature-schedule-status{min-height:16px;margin-top:4px;color:var(--ink-soft);font-size:11px;word-break:break-word}
   /* Buttons: keep their colors, add glass depth + motion */
   button{width:100%;padding:10px 12px;border-radius:13px;font-weight:700;cursor:pointer;font-size:13px;
     background:rgba(255,255,255,.7);color:var(--ink);
@@ -117,6 +144,20 @@
   #panelPage:not(.hidden){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
   #panelPage>.card{margin-bottom:0}
   #panelPage>.full-width{grid-column:1/-1}
+  /* Nuôi Page is temporarily unavailable from the popup. Keep its DOM in
+     place so the feature can be restored without migrating saved settings. */
+  #panelPage{display:none!important}
+  #panelSchedule:not(.hidden){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+  #panelSchedule>.card{margin-bottom:0}
+  #panelSchedule>.full-width{grid-column:1/-1}
+  .schedule-list{display:grid;gap:8px;max-height:420px;overflow:auto}
+  .schedule-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:11px;border:1px solid rgba(10,132,255,.18);border-radius:13px;background:rgba(255,255,255,.58)}
+  .schedule-item-title{font-size:12px;font-weight:800;color:var(--ink)}
+  .schedule-item-meta{margin-top:3px;color:var(--ink-soft);font-size:11px;line-height:1.45}
+  .schedule-item-status{display:inline-block;margin-top:5px;padding:2px 7px;border-radius:99px;background:rgba(10,132,255,.1);color:#075985;font-size:10px;font-weight:700}
+  .schedule-item-status.failed,.schedule-item-status.blocked{background:rgba(255,69,58,.12);color:#b42318}
+  .schedule-item-actions{display:grid;gap:5px;min-width:74px}
+  .schedule-item-actions button{width:auto;padding:6px 8px;border-radius:8px;font-size:10px;box-shadow:none}
   .share-ai-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:10px;align-items:start}
   .share-ai-transcript{min-height:160px;max-height:260px;overflow:auto;padding:8px;border:1px solid rgba(255,255,255,.75);border-radius:14px;background:rgba(255,255,255,.5)}
   .share-ai-message{margin:0 0 7px;padding:7px 9px;border-radius:9px;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.4}
@@ -124,9 +165,14 @@
   .share-ai-message.assistant{margin-right:11%;background:#f3e5f5;color:#4a1558}
   .share-ai-message.system{background:#fff3cd;color:#664d03}
 
-  .friend-mode-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:10px}
+  .friend-mode-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:10px}
   .friend-mode-btn{background:rgba(255,255,255,.6);color:var(--ink-soft);border:1px solid rgba(255,255,255,.7);padding:10px 6px;border-radius:12px;box-shadow:none}
   .friend-mode-btn.active{background:rgba(10,132,255,.14);color:#0866ff;border-color:rgba(10,132,255,.4);box-shadow:0 4px 14px rgba(10,132,255,.16)}
+  .friend-fof-kind-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:8px}
+  .friend-fof-kind-btn{background:rgba(255,255,255,.6);color:var(--ink-soft);border:1px solid rgba(255,255,255,.7);padding:8px 6px;border-radius:11px;box-shadow:none}
+  .friend-fof-kind-btn.active{background:rgba(48,209,88,.14);color:#0b7a35;border-color:rgba(48,209,88,.4)}
+  .friend-fof-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-height:250px;overflow:auto;background:rgba(255,255,255,.5);border:1px solid rgba(255,255,255,.75);border-radius:14px;margin-top:7px;padding:5px}
+  .friend-fof-results{display:grid;grid-template-columns:1fr;max-height:260px;overflow:auto;background:rgba(255,255,255,.5);border:1px solid rgba(255,255,255,.75);border-radius:14px;margin-top:7px;padding:5px}
   .friend-source-panel{margin-top:9px}
   .friend-group-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-height:230px;overflow:auto;background:rgba(255,255,255,.5);border:1px solid rgba(255,255,255,.75);border-radius:14px;margin-top:7px;padding:5px;box-shadow:inset 0 2px 8px rgba(31,38,135,.06)}
   .friend-metrics{display:flex;justify-content:center;gap:16px;color:var(--ink-faint);font-size:11px;margin:4px 0 9px}
@@ -213,43 +259,60 @@
     #panelAdd>.card{margin-bottom:12px}
     #panelPage:not(.hidden){display:block}
     #panelPage>.card{margin-bottom:12px}
+    #panelSchedule:not(.hidden){display:block}
+    #panelSchedule>.card{margin-bottom:12px}
     .friend-mode-tabs{grid-template-columns:1fr}
+    .friend-fof-list{grid-template-columns:1fr}
     .friend-group-list{grid-template-columns:1fr}
   }
 </style>
 </head>
 <body>
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
-    <h1 style="flex:1;margin:2px 0 10px">FB Auto Tool - Full <span style="font-size:11px;color:#65676b">v1.9.58</span></h1>
+    <h1 style="flex:1;margin:2px 0 10px">FB Auto Tool - Full <span style="font-size:11px;color:#65676b">v1.9.133</span></h1>
+    <button id="headerSchedule" type="button" data-i18n="tab.schedule" style="width:auto;flex:none;margin-bottom:8px;padding:6px 9px;background:#7b1fa2;color:#fff;font-weight:700">📅 Lịch chạy</button>
     <select id="uiLang" title="Language / Ngôn ngữ" style="width:auto;flex:none;margin-bottom:8px;font-weight:700">
       <option value="vi">🇻🇳 Tiếng Việt</option>
       <option value="en">🇬🇧 English</option>
     </select>
   </div>
+  <section id="runCenter" class="run-center hidden" aria-live="polite" aria-label="Trung tâm tiến trình đang chạy">
+    <div class="run-center-head"><span data-i18n="rc.title">📍 Trung tâm tiến trình</span><span class="run-center-live" data-i18n="rc.running">Đang chạy</span></div>
+    <div id="runCenterList" class="run-center-list"></div>
+  </section>
   <div class="tabs" style="flex-wrap:wrap">
     <div class="tab active" id="tabAdd" style="flex:1 1 45%" data-i18n="tab.add">🤝 Kết bạn</div>
     <div class="tab" id="tabScrape" style="flex:1 1 45%" data-i18n="tab.scrape">📄 Cào bài</div>
     <div class="tab" id="tabGroup" style="flex:1 1 45%" data-i18n="tab.group">👥 Nhóm</div>
-    <div class="tab" id="tabPage" style="flex:1 1 45%;color:#0b7a35" data-i18n="tab.page">🌱 Nuôi Page</div>
     <div class="tab" id="tabShare" style="flex:1 1 45%" data-i18n="tab.share">🔁 Share bài</div>
     <div class="tab" id="tabSales" style="flex:1 1 45%;color:#c2185b" data-i18n="tab.sales">🛍️ Đăng bán</div>
     <div class="tab" id="tabTrend" style="flex:1 1 45%;color:#0d47a1">📚 Học nhóm</div>
     <div class="tab" id="tabFeed" style="flex:1 1 45%" data-i18n="tab.feed">📰 Bản tin & AI</div>
+    <div class="tab" id="tabSchedule" style="flex:1 1 45%;color:#7b1fa2" data-i18n="tab.schedule">📅 Lịch chạy</div>
   </div>
 
   <!-- TAB 1: KẾT BẠN -->
   <div id="panelAdd">
     <div class="card friend-main">
-      <h3 style="margin:0;font-size:14px;color:#1877F2" data-i18n="fr.modes">Ba chế độ kết bạn</h3>
+      <h3 style="margin:0;font-size:14px;color:#1877F2" data-i18n="fr.modes">Bốn chế độ kết bạn</h3>
       <div class="friend-mode-tabs">
         <button class="friend-mode-btn active" data-friend-mode="suggestions" data-i18n="fr.modeSug">1️⃣ Theo gợi ý</button>
         <button class="friend-mode-btn" data-friend-mode="group-common" data-i18n="fr.modeCommon">2️⃣ Thành viên có điểm chung</button>
         <button class="friend-mode-btn" data-friend-mode="confirm" data-i18n="fr.modeConfirm">3️⃣ Xác nhận lời mời</button>
+        <button class="friend-mode-btn" data-friend-mode="friend-of-friend" data-i18n="fr.modeFoF">4️⃣ Theo bạn của bạn</button>
       </div>
       <div class="count" id="count">0 / 0</div>
       <div class="friend-metrics"><span><span data-i18n="fr.skipped">Bỏ qua:</span> <b id="friendSkipped">0</b></span><span><span data-i18n="fr.uncertain">Chưa xác nhận:</span> <b id="friendUncertain">0</b></span></div>
       <div class="status" id="status" data-i18n="fr.chooseMode">Chọn chế độ rồi bấm Bắt đầu; tiện ích sẽ tự lọc theo cấu hình. Quét thử chỉ để xem trước.</div>
       <div class="row" style="margin-top:8px"><button id="startBtn" data-i18n="fr.start">▶ Bắt đầu</button><button id="scanBtn" data-i18n="fr.scan">🔍 Quét thử, không gửi</button></div>
+      <div class="feature-schedule">
+        <label data-i18n="sch.when">Thời điểm chạy</label>
+        <div class="row">
+          <input id="friendScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+          <button id="friendScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+        </div>
+        <div id="friendScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
+      </div>
       <div class="row" style="margin-top:7px"><button id="friendResetBtn" style="background:#ffebe6;color:#c0392b" data-i18n="fr.reset">↺ Reset tiến trình</button><button id="friendClearHistoryBtn" style="background:#fff3e0;color:#e65100" data-i18n="fr.clearHist">🧹 Xóa lịch sử chống trùng</button></div>
     </div>
     <div class="card">
@@ -270,6 +333,28 @@
         <button id="friendOpenConfirmBtn" style="background:#e7f3ff;color:#0866ff" data-i18n="fr.openConfirm">Mở lời mời kết bạn</button>
         <div id="friendConfirmResults" class="friend-group-list" style="grid-template-columns:1fr;max-height:220px"><div class="hint" style="padding:6px" data-i18n="fr.confirmNoScan">Chưa có kết quả quét</div></div>
       </div>
+      <div id="friendFoFPanel" class="friend-source-panel hidden">
+        <p class="hint" data-i18n-html="fr.fofHint">Chọn bạn nguồn rồi bấm Bắt đầu kết bạn. Tiện ích cuộn danh sách của nguồn và gửi lần lượt, bỏ qua người đã gửi hoặc đã là bạn bè.</p>
+        <div class="friend-fof-kind-tabs">
+          <button id="friendFoFLinkModeBtn" class="friend-fof-kind-btn active" type="button" data-i18n="fr.fofByLink">🔗 Theo link nguồn</button>
+          <button id="friendFoFMyListModeBtn" class="friend-fof-kind-btn" type="button" data-i18n="fr.fofByMine">👥 Từ danh sách bạn bè của tôi</button>
+        </div>
+        <div id="friendFoFLinkPanel" class="friend-source-panel">
+          <label data-i18n="fr.fofLinkLabel">Link profile bạn nguồn</label>
+          <input id="friendFoFSourceLink" type="url" placeholder="https://www.facebook.com/ten-ban-nguon" data-i18n-ph="fr.fofLinkPh">
+          <button id="friendFoFScanLinkBtn" type="button" style="margin-top:7px;background:#e8f5e9;color:#0b7a35" data-i18n="fr.fofScanLink">▶ Bắt đầu kết bạn từ link này</button>
+        </div>
+        <div id="friendFoFMyListPanel" class="friend-source-panel hidden">
+          <button id="friendFoFLoadMineBtn" type="button" style="background:#e7f3ff;color:#0866ff" data-i18n="fr.fofLoadMine">🔄 Tải danh sách bạn bè của tôi</button>
+          <label data-i18n="fr.fofSourceSearch">Tìm bạn nguồn theo tên</label>
+          <input id="friendFoFSourceKeyword" type="search" placeholder="VD: Nguyễn Văn A" data-i18n-ph="fr.fofSourceSearchPh">
+          <div id="friendFoFSourceList" class="friend-fof-list"><div class="hint" style="padding:6px" data-i18n="fr.fofNoSources">Chưa tải danh sách bạn bè</div></div>
+          <button id="friendFoFScanSelectedBtn" type="button" style="margin-top:7px;background:#e8f5e9;color:#0b7a35" data-i18n="fr.fofScanSelected">▶ Bắt đầu kết bạn từ nguồn đã chọn</button>
+        </div>
+        <div class="status" id="friendFoFStatus" data-i18n="fr.fofReady">Chưa có phiên quét nguồn</div>
+        <div id="friendFoFCandidateList" class="friend-fof-results" hidden><div class="hint" style="padding:6px" data-i18n="fr.fofNoCandidates">Chưa có người cần kết bạn</div></div>
+        <p class="hint" data-i18n="fr.fofPrivacyHint">“Xem được” chỉ có nghĩa Facebook đang hiển thị danh sách cho tài khoản hiện tại; extension không cố mở danh sách bị ẩn.</p>
+      </div>
     </div>
     <div class="card">
       <h3 style="margin:0 0 7px;font-size:13px;color:#6a1b9a" data-i18n="fr.sharedCfg">Cấu hình dùng chung</h3>
@@ -284,17 +369,9 @@
       </div>
       <div id="friendConfirmFilters" class="friend-source-panel hidden">
         <h4 style="margin:10px 0 6px;font-size:12px;color:#6a1b9a" data-i18n="fr.confirmFilters">Bộ lọc hồ sơ xác nhận</h4>
-        <div class="row">
-          <div><label data-i18n="fr.confirmMinMutual">Số bạn bè chung tối thiểu</label><input id="friendConfirmMinMutual" type="number" min="0" max="999" value="0"></div>
-          <div><label data-i18n="fr.confirmMinGroups">Số nhóm chung tối thiểu</label><input id="friendConfirmMinGroups" type="number" min="0" max="999" value="0"></div>
-        </div>
-        <label data-i18n="fr.confirmHometown">Quê quán chứa từ khóa</label>
-        <input id="friendConfirmHometown" type="text" placeholder="VD: Hà Nội" data-i18n-ph="fr.confirmHometownPh">
-        <label data-i18n="fr.confirmSchool">Trường học chung chứa từ khóa</label>
-        <input id="friendConfirmSchool" type="text" placeholder="VD: Đại học Bách Khoa" data-i18n-ph="fr.confirmSchoolPh">
-        <label style="display:flex;align-items:center;gap:7px;margin-top:8px"><input id="friendConfirmRequirePhoto" type="checkbox" style="width:auto"><span data-i18n="fr.confirmRequirePhoto">Yêu cầu có ảnh đại diện</span></label>
-        <label style="display:flex;align-items:center;gap:7px;margin-top:6px"><input id="friendConfirmSkipUnknown" type="checkbox" checked style="width:auto"><span data-i18n="fr.confirmSkipUnknown">Bỏ qua nếu Facebook không hiển thị đủ dữ liệu</span></label>
-        <p class="hint" data-i18n="fr.confirmFilterHint">Chỉ dữ liệu công khai Facebook đang hiển thị được dùng; không suy đoán thông tin cá nhân.</p>
+        <label data-i18n="fr.confirmMinMutual">Số bạn bè chung tối thiểu</label>
+        <input id="friendConfirmMinMutual" type="number" min="0" max="999" value="0">
+        <p class="hint" data-i18n="fr.confirmFilterHint">Để 0 để xác nhận mọi lời mời đang hiển thị; số lớn hơn chỉ xác nhận người có đủ bạn chung.</p>
       </div>
       <p class="hint" data-i18n="fr.firstDelay">Lần gửi đầu tiên cũng phải chờ đủ delay. Chỉ tăng bộ đếm khi Facebook xác nhận đã gửi.</p>
       <div class="warn" data-i18n="fr.warnLimit">Nếu Facebook cảnh báo, giới hạn hoặc yêu cầu xác minh, tính năng sẽ dừng và không cố vượt hạn chế.</div>
@@ -312,12 +389,20 @@
       <input id="scrapeNum" type="number" min="1" max="10000" value="200">
       <label style="display:flex;align-items:center;gap:7px;margin-top:8px"><input id="scrapeSkipAds" type="checkbox" checked style="width:auto"><span data-i18n="sc.skipAds"> Bỏ qua bài quảng cáo/Được tài trợ</span></label>
       <div style="margin-top:10px">
-        <button id="scrapeBtn" data-i18n="sc.start">▶ Bắt đầu cào</button>
-        <div class="row" style="margin-top:6px">
-          <button id="stopScrapeBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
-          <button id="resetScrapeBtn" style="background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="c.reset">↺ Reset</button>
+          <button id="scrapeBtn" data-i18n="sc.start">▶ Bắt đầu cào</button>
+          <div class="row" style="margin-top:6px">
+            <button id="stopScrapeBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
+            <button id="resetScrapeBtn" style="background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="c.reset">↺ Reset</button>
+          </div>
+          <div class="feature-schedule">
+            <label data-i18n="sch.when">Thời điểm chạy</label>
+            <div class="row">
+              <input id="scrapeScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+              <button id="scrapeScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+            </div>
+            <div id="scrapeScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
+          </div>
         </div>
-      </div>
       <div id="downloadGroup" class="hidden" style="margin-top:10px;border-top:1px solid #e4e6eb;padding-top:10px">
         <label data-i18n="sc.formatHint">Chọn định dạng để tải (cào xong mới hiện)</label>
         <div class="row">
@@ -389,6 +474,14 @@
         <button id="pageGroupStartBtn" style="background:linear-gradient(135deg,#0b7a35,#34a853);color:#fff" data-i18n="pg.start">▶ Page tham gia nhóm</button>
         <button id="pageGroupStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
       </div>
+      <div class="feature-schedule">
+        <label data-i18n="sch.when">Thời điểm chạy</label>
+        <div class="row">
+          <input id="pageGroupJoinScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+          <button id="pageGroupJoinScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+        </div>
+        <div id="pageGroupJoinScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
+      </div>
       <button id="pageGroupResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="pg.reset">↺ Reset tiến trình Page</button>
       <p class="warn" data-i18n="pg.warn">Mọi nhóm phải được Facebook xác nhận Page đã tham gia hoặc đã gửi yêu cầu.</p>
     </div>
@@ -411,6 +504,14 @@
         <button id="pageGroupPostStartBtn" style="background:linear-gradient(135deg,#1565c0,#42a5f5);color:#fff" data-i18n="pgp.start">▶ Đăng bài nhóm bằng Page</button>
         <button id="pageGroupPostStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
       </div>
+      <div class="feature-schedule">
+        <label data-i18n="sch.when">Thời điểm chạy</label>
+        <div class="row">
+          <input id="pageGroupPostScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+          <button id="pageGroupPostScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+        </div>
+        <div id="pageGroupPostScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
+      </div>
       <button id="pageGroupPostResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="pgp.reset">↺ Reset đăng bài Page</button>
       <p class="hint" data-i18n="pgp.hint">AI đọc chủ đề nhóm và các bài gần đây để tạo một bài mở thảo luận; không đăng lại cùng nội dung.</p>
     </div>
@@ -430,6 +531,14 @@
       <div class="row" style="margin-top:8px">
         <button id="pageWatchStartBtn" style="background:linear-gradient(135deg,#7b1fa2,#ba68c8);color:#fff" data-i18n="pgw.start">▶ Theo dõi Page</button>
         <button id="pageWatchStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
+      </div>
+      <div class="feature-schedule">
+        <label data-i18n="sch.when">Thời điểm chạy</label>
+        <div class="row">
+          <input id="pageWatchScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+          <button id="pageWatchScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+        </div>
+        <div id="pageWatchScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
       </div>
       <button id="pageWatchResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="pgw.reset">↺ Reset theo dõi</button>
       <p class="hint" data-i18n="pgw.hint">Danh sách Page đã theo dõi được lưu riêng để dùng cho Comment AI.</p>
@@ -452,6 +561,14 @@
       <div class="row" style="margin-top:8px">
         <button id="pageCommentStartBtn" style="background:linear-gradient(135deg,#e65100,#ff9800);color:#fff" data-i18n="pgc.start">▶ Comment bằng Page</button>
         <button id="pageCommentStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
+      </div>
+      <div class="feature-schedule">
+        <label data-i18n="sch.when">Thời điểm chạy</label>
+        <div class="row">
+          <input id="pageCommentScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+          <button id="pageCommentScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+        </div>
+        <div id="pageCommentScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
       </div>
       <button id="pageCommentResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="pgc.reset">↺ Reset Comment Page</button>
       <p class="hint" data-i18n="pgc.hint">AI chỉ đọc bài và tạo comment theo prompt; không có bước phân loại chủ đề riêng.</p>
@@ -485,6 +602,14 @@ Nội dung bài gốc: {postText}</textarea>
       <div class="row" style="margin-top:9px">
         <button id="groupShareStartBtn" style="background:#7b1fa2;color:#fff" data-i18n="sh.start">▶ Bắt đầu share</button>
         <button id="groupShareStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
+      </div>
+      <div class="feature-schedule">
+        <label data-i18n="sch.when">Thời điểm chạy</label>
+        <div class="row">
+          <input id="shareScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+          <button id="shareScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+        </div>
+        <div id="shareScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
       </div>
       <button id="groupShareResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="sh.reset">↺ Reset tiến trình share</button>
       <div class="warn" data-i18n="sh.warnPreview">Chỉ tăng bộ đếm sau khi Facebook nhận lệnh đăng. Nếu link không tạo được bản xem trước, tiện ích dừng trước khi đăng để tránh biến thành bài chỉ có URL.</div>
@@ -586,6 +711,14 @@ Nội dung bài gốc: {postText}</textarea>
         <button id="salesStartBtn" style="background:#c2185b;color:#fff">▶ Tạo và đăng bài bán hàng</button>
         <button id="salesStopBtn" style="background:#e4e6eb;color:#050505">⏹ Dừng</button>
       </div>
+      <div class="feature-schedule">
+        <label data-i18n="sch.when">Thời điểm chạy</label>
+        <div class="row">
+          <input id="salesScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+          <button id="salesScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+        </div>
+        <div id="salesScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
+      </div>
       <button id="salesResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6">↺ Reset tiến trình</button>
       <div id="salesAiSummary" class="hint" style="margin-top:7px">AI dùng chung cấu hình đã lưu trong dự án.</div>
     </div>
@@ -643,6 +776,14 @@ Nội dung bài gốc: {postText}</textarea>
       <div class="row" style="margin-top:7px">
         <button id="trendLearnBtn" style="background:linear-gradient(135deg,#0A84FF 0%,#5E5CE7 100%);color:#fff">▶ Học bài từ nhóm đã tích</button>
         <button id="trendLearnStopBtn" style="background:#e4e6eb;color:#050505">⏹ Dừng</button>
+      </div>
+      <div class="feature-schedule">
+        <label data-i18n="sch.when">Thời điểm chạy</label>
+        <div class="row">
+          <input id="trendLearnScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+          <button id="trendLearnScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+        </div>
+        <div id="trendLearnScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
       </div>
       <button id="trendDiagnoseBtn" style="margin-top:7px;background:#e3f2fd;color:#0d47a1;border:1px solid #90caf9">🔍 Chẩn đoán trang Facebook đang mở (không cào, chỉ đọc)</button>
       <button id="trendLearnResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6">↺ Reset học bài</button>
@@ -713,7 +854,7 @@ Nội dung bài gốc: {postText}</textarea>
           <label class="trend-bg-swatch" style="--swatch:#263238" title="Đen"><input class="trend-post-bg-color" type="checkbox" value="black" checked><span class="trend-bg-mark" aria-hidden="true">✓</span><span class="trend-bg-name" data-i18n="c.colorBlack">Đen</span></label>
         </div>
         <div class="row" style="margin-top:6px">
-          <div><label data-i18n="gp.maxChars">Tối đa ký tự</label><input id="trendBackgroundMaxChars" type="number" min="40" max="140" value="100"></div>
+          <div><label data-i18n="gp.maxChars">Tối đa ký tự</label><input id="trendBackgroundMaxChars" type="number" min="40" max="130" value="100"></div>
           <div class="hint" style="align-self:end;margin:0" data-i18n="gp.noPalette">Nếu nhóm không có bảng màu, tiện ích tự bỏ qua.</div>
         </div>
       </div>
@@ -728,6 +869,14 @@ Nội dung bài gốc: {postText}</textarea>
       <div class="row" style="margin-top:8px">
         <button id="trendPostBtn" style="background:#0d47a1;color:#fff">▶ Đăng bài viết lại</button>
         <button id="trendPostStopBtn" style="background:#e4e6eb;color:#050505">⏹ Dừng</button>
+      </div>
+      <div class="feature-schedule">
+        <label data-i18n="sch.when">Thời điểm chạy</label>
+        <div class="row">
+          <input id="trendPostScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+          <button id="trendPostScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+        </div>
+        <div id="trendPostScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
       </div>
       <button id="trendPostResetBtn" style="margin-top:7px;background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6">↺ Reset đăng</button>
       <div id="trendAiSummary" class="hint" style="margin-top:7px">AI dùng chung cấu hình đã lưu trong dự án.</div>
@@ -801,7 +950,7 @@ Nội dung bài gốc: {postText}</textarea>
           <label title="Đen" style="display:flex;align-items:center;gap:4px;margin:0;padding:6px;border-radius:7px;background:#263238;color:#fff"><input class="group-post-bg-color" type="checkbox" value="black" checked style="width:auto"><span data-i18n="c.colorBlack">Đen</span></label>
         </div>
         <div class="row" style="margin-top:6px">
-          <div><label data-i18n="gp.maxChars">Tối đa ký tự</label><input id="groupPostMaxChars" type="number" min="40" max="140" value="100"></div>
+          <div><label data-i18n="gp.maxChars">Tối đa ký tự</label><input id="groupPostMaxChars" type="number" min="40" max="130" value="100"></div>
           <div class="hint" style="align-self:end;margin:0" data-i18n="gp.noPalette">Nếu nhóm không có bảng màu, tiện ích tự bỏ qua.</div>
         </div>
       </div>
@@ -809,6 +958,14 @@ Nội dung bài gốc: {postText}</textarea>
       <div id="groupPostPreview" class="hidden" style="margin-top:6px;border-radius:10px;padding:14px;color:#fff;font-size:17px;font-weight:700;text-align:center;white-space:pre-wrap;word-break:break-word"></div>
       <p class="hint" data-i18n="gp.postDelay">Delay giữa mỗi nhóm dùng theo ô cài đặt phía trên. Các bước tải composer, mở bảng màu, gõ nội dung và bấm Đăng vẫn tự động chờ đủ để Facebook kịp xử lý.</p>
       <button id="groupPostStartBtn" style="background:#e65100;color:#fff" data-i18n="gp.start">▶ Tạo và đăng bài lên nhóm đã chọn</button>
+      <div class="feature-schedule">
+        <label data-i18n="sch.when">Thời điểm chạy</label>
+        <div class="row">
+          <input id="groupPostScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+          <button id="groupPostScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+        </div>
+        <div id="groupPostScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
+      </div>
       <button id="groupPostStopBtn" style="background:#e4e6eb;color:#050505;margin-top:6px" data-i18n="gp.stop">⏹ Dừng đăng nhóm</button>
       <button id="groupPostResetBtn" style="background:#e4e6eb;color:#050505;margin-top:6px" data-i18n="gp.resetBtn">↺ Reset đăng nhóm</button>
     </div>
@@ -816,8 +973,10 @@ Nội dung bài gốc: {postText}</textarea>
     <!-- 2. TƯƠNG TÁC NHÓM ĐÃ THAM GIA -->
     <div class="card">
       <h3 style="margin:0 0 6px;font-size:13px;color:#00897b" data-i18n="gi.title">💬 Tương tác nhóm đã tham gia</h3>
-      <div class="count" id="groupInteractCount">0 / 0</div>
+      <div class="count" id="groupInteractCount">Like/Random: 0 / 0</div>
       <div class="status" id="groupInteractStatus" data-i18n="gi.sub">Tải danh sách rồi tích chọn các nhóm</div>
+      <div class="count" id="groupCommentCount" style="margin-top:5px">Comment AI: 0 / 0</div>
+      <div class="status" id="groupCommentStatus" data-i18n="gi.commentSub">Comment AI chạy riêng, không phụ thuộc Like/Random</div>
       <div class="row" style="margin-top:7px">
         <button id="loadJoinedGroupsBtn" style="background:#e0f2f1;color:#00695c" data-i18n="c.loadGroups">🔄 Tải danh sách nhóm</button>
         <button id="selectAllGroupsBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.selectAll">☑ Chọn tất cả</button>
@@ -847,10 +1006,29 @@ Nội dung bài gốc: {postText}</textarea>
       <div class="row">
         <div><label data-i18n="gi.delay">Giãn cách (giây)</label><div class="row"><input id="groupInteractMinDelay" type="number" min="1" value="5"><input id="groupInteractMaxDelay" type="number" min="1" value="12"></div></div>
       </div>
-      <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-weight:600"><input id="groupInteractAiComment" type="checkbox" style="width:auto"><span data-i18n="gi.aiComment"> Bình luận AI cho mỗi bài đã thả cảm xúc (dùng cấu hình AI chung)</span></label>
-      <p class="hint" data-i18n="gi.howHint">Chương trình mở N nhóm đầu theo thứ tự đã tích, tương tác đúng số bài mỗi nhóm (thả cảm xúc + comment AI nếu bật) rồi chuyển sang nhóm tiếp theo.</p>
-      <button id="groupInteractStartBtn" style="background:#00897b;color:#fff" data-i18n="gi.start">▶ Bắt đầu tương tác nhóm</button>
-      <button id="groupInteractStopBtn" style="background:#e4e6eb;color:#050505;margin-top:6px" data-i18n="c.stop">⏹ Dừng</button>
+      <p class="hint" data-i18n="gi.howHint">Chọn một nút để chạy riêng: Like/Random chỉ thả cảm xúc; Comment AI chỉ bình luận bằng AI trên các bài phù hợp.</p>
+      <button id="groupInteractStartBtn" style="background:#00897b;color:#fff" data-i18n="gi.reactionStart">👍 Bắt đầu Like/Random</button>
+      <div class="feature-schedule">
+        <label data-i18n="sch.when">Thời điểm chạy</label>
+        <div class="row">
+          <input id="groupInteractScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+          <button id="groupInteractScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+        </div>
+        <div id="groupInteractScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
+      </div>
+      <button id="groupInteractStopBtn" style="background:#e4e6eb;color:#050505;margin-top:6px" data-i18n="gi.reactionStop">⏹ Dừng Like/Random</button>
+      <button id="groupInteractResetBtn" style="background:#e4e6eb;color:#050505;margin-top:6px" data-i18n="gi.reactionReset">↺ Reset Like/Random</button>
+      <button id="groupCommentStartBtn" style="background:#8e24aa;color:#fff;margin-top:6px" data-i18n="gi.commentStart">🤖 Bắt đầu Comment AI</button>
+      <div class="feature-schedule">
+        <label data-i18n="sch.when">Thời điểm chạy</label>
+        <div class="row">
+          <input id="groupCommentScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+          <button id="groupCommentScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+        </div>
+        <div id="groupCommentScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
+      </div>
+      <button id="groupCommentStopBtn" style="background:#e4e6eb;color:#050505;margin-top:6px" data-i18n="gi.commentStop">⏹ Dừng Comment AI</button>
+      <button id="groupCommentResetBtn" style="background:#e4e6eb;color:#050505;margin-top:6px" data-i18n="gi.commentReset">↺ Reset Comment AI</button>
     </div>
 
     <!-- 3. TÌM & THAM GIA NHÓM -->
@@ -876,6 +1054,9 @@ Nội dung bài gốc: {postText}</textarea>
             <div class="row"><input id="groupMinDelay" type="number" min="1" value="5"><input id="groupMaxDelay" type="number" min="1" value="15"></div>
           </div>
         </div>
+        <label data-i18n="gj.confirmWait">Thời gian chờ Facebook xác nhận (giây)</label>
+        <input id="groupConfirmWait" type="number" min="5" max="600" step="1" value="90">
+        <p class="hint" data-i18n="gj.confirmWaitHint">Mặc định 90 giây; chỉ bấm Tham gia một lần và chờ tối đa thời gian này.</p>
         <label data-i18n="gj.answers">Câu trả lời tự động khi nhóm hỏi (mỗi dòng 1 câu)</label>
         <textarea id="groupAnswers" rows="3" style="width:100%;padding:7px 8px;border:1px solid #ccd0d5;border-radius:6px;font-size:12px;resize:vertical" data-i18n="gj.answersDefault" data-i18n-once>Tôi đồng ý với quy tắc nhóm
 Tôi muốn học hỏi và đóng góp tích cực
@@ -884,9 +1065,15 @@ Có, tôi sẽ tuân thủ nội quy</textarea>
         <label data-i18n="gj.aiPrompt">Prompt AI trả lời — dùng {groupName} và {questions}</label>
         <textarea id="groupAiAnswersPrompt" rows="3" data-i18n="gj.aiPromptDefault" data-i18n-once>Bạn đang xin tham gia nhóm "{groupName}". Hãy trả lời trung thực, lịch sự và ngắn gọn từng câu hỏi sau bằng tiếng Việt. Không bịa thông tin cá nhân hoặc kinh nghiệm không được cung cấp. Trả về đúng một mảng JSON các câu trả lời theo đúng thứ tự câu hỏi: {questions}</textarea>
         <details class="prompt-guide"><summary data-i18n="prompt.guideTitle">📘 Cách viết Prompt hiệu quả</summary><div class="guide-copy" data-i18n="prompt.joinAnswersGuide">...</div></details>
-        <p class="hint" data-i18n="gj.apiHint">Dùng API đã cấu hình ở phần Đăng bài AI lên nhóm. Nếu AI lỗi sẽ dùng các câu trả lời mẫu phía trên.</p>
+        <p class="hint" data-i18n="gj.apiHint">Câu đồng ý nội quy dùng câu mẫu; câu hỏi mở dùng API AI đã cấu hình. Nếu AI không trả lời đủ, nhóm được bỏ qua.</p>
+        <p class="hint" id="groupAiUsage" data-i18n="gq.aiWaiting">AI: chưa gặp câu hỏi mở trong phiên này.</p>
         <div style="margin-top:10px">
           <button id="groupStartBtn" style="background:#1877F2;color:#fff" data-i18n="gj.start">▶ Tìm & Tham gia (từ khoá)</button>
+          <div class="row" style="margin-top:6px">
+            <input id="groupScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+            <button id="groupScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+          </div>
+          <div id="groupScheduleStatus" class="hint" aria-live="polite"></div>
           <div class="row" style="margin-top:6px">
             <button id="groupStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
             <button id="groupResetBtn" style="background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="c.reset">↺ Reset</button>
@@ -904,12 +1091,20 @@ Có, tôi sẽ tuân thủ nội quy</textarea>
           <div><label data-i18n="gd.minDelay">Delay min (giây)</label><input id="discoverMinDelay" type="number" min="1" value="5"></div>
           <div><label data-i18n="gd.maxDelay">Delay max (giây)</label><input id="discoverMaxDelay" type="number" min="1" value="15"></div>
         </div>
+        <label data-i18n="gd.confirmWait">Thời gian chờ Facebook xác nhận (giây)</label>
+        <input id="discoverConfirmWait" type="number" min="5" max="600" step="1" value="90">
+        <p class="hint" data-i18n="gd.confirmWaitHint">Mặc định 90 giây; chỉ bấm Tham gia một lần và chờ tối đa thời gian này.</p>
         <label data-i18n="gd.answers">Câu trả lời tự động (mỗi dòng 1 câu)</label>
         <textarea id="discoverAnswers" rows="3" style="width:100%;padding:7px 8px;border:1px solid #ccd0d5;border-radius:6px;font-size:12px;resize:vertical" data-i18n="gj.answersDefault" data-i18n-once>Tôi đồng ý với quy tắc nhóm
 Tôi muốn học hỏi và đóng góp tích cực
 Có, tôi sẽ tuân thủ nội quy</textarea>
         <div style="margin-top:10px">
           <button id="discoverStartBtn" style="background:#009688;color:#fff" data-i18n="gd.start">🧭 Tham gia theo Khám phá</button>
+          <div class="row" style="margin-top:6px">
+            <input id="discoverScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+            <button id="discoverScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+          </div>
+          <div id="discoverScheduleStatus" class="hint" aria-live="polite"></div>
           <div class="row" style="margin-top:6px">
             <button id="discoverStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
             <button id="discoverResetBtn" style="background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="c.reset">↺ Reset</button>
@@ -946,6 +1141,14 @@ Có, tôi sẽ tuân thủ nội quy</textarea>
       <div style="margin-top:8px">
         <button id="feedStartBtn" style="background:#1877F2;color:#fff" data-i18n="fd.start">▶ Bắt đầu tương tác bản tin</button>
         <button id="feedScanBtn" style="background:#e4e6eb;color:#050505;margin-top:6px" data-i18n="fd.scan">🔍 Quét thử (chỉ highlight, không like)</button>
+        <div class="feature-schedule">
+          <label data-i18n="sch.when">Thời điểm chạy</label>
+          <div class="row">
+            <input id="feedScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+            <button id="feedScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+          </div>
+          <div id="feedScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
+        </div>
         <div class="row" style="margin-top:6px">
           <button id="feedStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
           <button id="feedResetBtn" style="background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="c.reset">↺ Reset</button>
@@ -995,12 +1198,53 @@ Có, tôi sẽ tuân thủ nội quy</textarea>
       <p class="hint" data-i18n="ai.cacheHint">Chế độ Cân bằng gom 5 bài/request, chỉ gửi tối đa 500 ký tự mỗi bài và dùng lại comment đã tạo trong cache.</p>
       <div style="margin-top:8px">
         <button id="aiStartBtn" style="background:#9c27b0;color:#fff" data-i18n="ai.start">🤖 Bắt đầu AI comment</button>
+        <div class="feature-schedule">
+          <label data-i18n="sch.when">Thời điểm chạy</label>
+          <div class="row">
+            <input id="aiFeedScheduleWhen" type="datetime-local" aria-label="Thời điểm hẹn chạy">
+            <button id="aiFeedScheduleBtn" type="button" data-i18n="sch.scheduleThis">📅 Hẹn lịch cấu hình này</button>
+          </div>
+          <div id="aiFeedScheduleStatus" class="feature-schedule-status" aria-live="polite"></div>
+        </div>
         <div class="row" style="margin-top:6px">
           <button id="aiStopBtn" style="background:#e4e6eb;color:#050505" data-i18n="c.stop">⏹ Dừng</button>
           <button id="aiResetBtn" style="background:#ffebe6;color:#c0392b;border:1px solid #f5c6c6" data-i18n="c.reset">↺ Reset</button>
         </div>
       </div>
       <div class="warn" style="margin-top:8px" data-i18n="ai.warnKeys">Mỗi Provider cần API Key riêng: OpenAI lấy ở platform.openai.com/api-keys, Gemini ở aistudio.google.com/app/apikey, Claude ở console.anthropic.com, Groq ở console.groq.com, OpenRouter ở openrouter.ai/keys. Có thể lưu nhiều key cùng lúc (mỗi provider 1 key).</div>
+    </div>
+  </div>
+
+  <!-- TAB LỊCH CHẠY: độc lập với state machine Facebook của từng tính năng. -->
+  <div id="panelSchedule" class="hidden">
+    <div class="card">
+      <h3 style="margin:0 0 5px;font-size:14px;color:#7b1fa2" data-i18n="sch.title">📅 Lịch chạy tập trung</h3>
+      <p class="hint" data-i18n="sch.hint">Cấu hình tính năng ở tab tương ứng trước, rồi chọn tính năng và giờ chạy tại đây. Lịch chụp cấu hình lúc tạo, không lưu API Key.</p>
+      <label data-i18n="sch.feature">Tính năng</label>
+      <select id="scheduleFeature">
+        <option value="friend" data-i18n="sch.feature.friend">Kết bạn (theo chế độ đang chọn)</option>
+        <option value="scrape" data-i18n="sch.feature.scrape">Cào bài</option>
+        <option value="feed" data-i18n="sch.feature.feed">Tương tác Bản tin</option>
+        <option value="aiFeed" data-i18n="sch.feature.aiFeed">Comment AI Bản tin</option>
+        <option value="groupInteract" data-i18n="sch.feature.groupInteract">Like/Random trong nhóm</option>
+        <option value="groupComment" data-i18n="sch.feature.groupComment">Comment AI trong nhóm</option>
+        <option value="groupPost" data-i18n="sch.feature.groupPost">Đăng bài AI lên nhóm</option>
+        <option value="keyword" data-i18n="sch.keyword">Tìm & tham gia nhóm theo từ khóa</option>
+        <option value="discover" data-i18n="sch.discover">Tham gia nhóm theo Khám phá</option>
+        <option value="share" data-i18n="sch.feature.share">Share bài vào nhóm</option>
+        <option value="sales" data-i18n="sch.feature.sales">Đăng bài bán hàng</option>
+        <option value="trendLearn" data-i18n="sch.feature.trendLearn">Học bài theo Trend</option>
+        <option value="trendPost" data-i18n="sch.feature.trendPost">Đăng bài Trend</option>
+      </select>
+      <label data-i18n="sch.when">Ngày và giờ chạy</label>
+      <input id="scheduleWhen" type="datetime-local">
+      <p class="hint" data-i18n="sch.oneTime">Mỗi lịch chạy một lần. Khi đến giờ mà một tính năng khác đang chạy, lịch được đánh dấu cần kiểm tra và không tự thao tác.</p>
+      <button id="scheduleCreateBtn" style="margin-top:8px;background:linear-gradient(135deg,#7b1fa2,#ba68c8);color:#fff" data-i18n="sch.create">📅 Lưu lịch chạy</button>
+      <div id="scheduleStatus" class="status" data-i18n="sch.ready">Chưa có lịch mới.</div>
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 6px;font-size:13px;color:#7b1fa2" data-i18n="sch.upcoming">Lịch đã đặt</h3>
+      <div id="scheduleList" class="schedule-list"><div class="hint" data-i18n="sch.empty">Chưa có lịch chạy.</div></div>
     </div>
   </div>
 

@@ -274,12 +274,14 @@
 
   async function learnOneGroup(group,perGroup,seen,onRound){
     let got=[],scanned=0,totalInMain=0,round=0,stallRounds=0;
-    const unlimited=!Number.isFinite(perGroup),finiteRounds=8,endStallRounds=3;
-    // Với chế độ không giới hạn, không dùng số vòng cố định: tiếp tục cuộn
-    // đến khi Facebook không tải thêm bài mới trong vài vòng liên tiếp. Chế
-    // độ hữu hạn cũ vẫn giữ tối đa 8 vòng để người dùng chủ động giới hạn.
+    const unlimited=!Number.isFinite(perGroup),endStallRounds=3;
+    // Cả hai chế độ đều tiếp tục cuộn đến khi đạt số bài đã yêu cầu hoặc
+    // Facebook thực sự không tải thêm bài mới trong vài vòng liên tiếp.
+    // Không giới hạn số vòng ở mode hữu hạn: một nhóm có thể chỉ render vài
+    // bài ở mỗi lần cuộn, nên trần 8 vòng khiến yêu cầu như 100 bài bị dừng
+    // non dù feed vẫn còn bài mới.
     while(await learnActive()){
-      if(!unlimited&&(got.length>=perGroup||round>=finiteRounds))break;
+      if(!unlimited&&got.length>=perGroup)break;
       round++;
       const beforeGot=got.length,beforeCandidates=countMainArticles(),beforeHeight=Math.max(document.documentElement?.scrollHeight||0,document.body?.scrollHeight||0);
       if(!await learnActive())return {got,scanned,totalInMain};
@@ -304,13 +306,13 @@
         got.push(d);
       }
       const roundGot=got.length-beforeGot;
-      try{if(onRound)await onRound({round,rounds:finiteRounds,unlimited,got:got.length,scanned,totalInMain,items:got.slice()});}catch{}
+      try{if(onRound)await onRound({round,unlimited,got:got.length,scanned,totalInMain,items:got.slice()});}catch{}
       if(!unlimited&&got.length>=perGroup)break;
       window.scrollTo(0,document.body.scrollHeight);
       if(!await waitWhileActive(1800,learnActive))return {got,scanned,totalInMain};
       const afterCandidates=countMainArticles(),afterHeight=Math.max(document.documentElement?.scrollHeight||0,document.body?.scrollHeight||0);
       if(roundGot===0&&afterCandidates<=beforeCandidates&&afterHeight<=beforeHeight)stallRounds++;else stallRounds=0;
-      if(unlimited&&stallRounds>=endStallRounds)break;
+      if(stallRounds>=endStallRounds)break;
     }
     return {got,scanned,totalInMain};
   }
@@ -471,19 +473,33 @@
     const deadline=Date.now()+5000;
     while(Date.now()<deadline){
       if(!await postActive())return false;
-      if(!trendDialog())return true;
       const discardDialog=trendDiscardComposerDialog();
       if(discardDialog){
         const discard=[...discardDialog.querySelectorAll('[role="button"],button')]
           .filter(visible)
-          .find(el=>/^(?:bỏ bài viết|bỏ bài đăng|discard post|discard)$/i.test(labelOf(el)));
+          .find(el=>/^(?:bỏ bài viết|bỏ bài đăng|discard post|discard|rời khỏi trang|leave page|leave)$/i.test(labelOf(el)));
         if(discard){
           if(!await trendClick(discard))return false;
-        }
+          await sleep(220);
+        }else return false;
       }
+      // The discard confirmation can be a separate dialog without an editor.
+      // Check it before treating the composer as closed, otherwise Facebook's
+      // native "Rời khỏi Trang" prompt remains and blocks the next job.
+      if(!trendDialog()&&!trendDiscardComposerDialog())return true;
+      if(!trendDialog()&&trendDiscardComposerDialog()){
+        await sleep(220);
+        continue;
+      }
+      if(!trendDialog())return true;
+      if(trendDiscardComposerDialog()){
+        await sleep(220);
+        continue;
+      }
+      if(!trendDialog())return true;
       await sleep(220);
     }
-    return !trendDialog();
+    return !trendDialog()&&!trendDiscardComposerDialog();
   }
   async function trendWaitFor(fn,timeout=15000){
     const end=Date.now()+timeout;
@@ -531,7 +547,7 @@
       mode:input?.mode==="fixed"?"fixed":"random",
       fixedColor:allowed.includes(input?.fixedColor)?input.fixedColor:"pink",
       colors:colors.length?colors:allowed,
-      maxChars:Math.min(140,Math.max(40,parseInt(input?.maxChars)||100)),
+      maxChars:Math.min(130,Math.max(40,parseInt(input?.maxChars)||100)),
       fallback:"skip"
     };
   }
@@ -694,11 +710,15 @@
     }
     await trendCloseBackgroundChooser();
     await postStatus(t("gp2.pickedReady",{color:trendBackgroundColorName(selectedColor)}),{trendPostStage:"background-confirmed",trendPostBackgroundColor:selectedColor});
-    return {applied:true,color:selectedColor,score:selectedScore};
+    // Facebook thường tháo bảng màu khỏi DOM ngay sau khi chọn. Ở một số
+    // màu sáng, computedStyle của ô nhập cũng trở về trắng dù nút màu đã
+    // được Facebook đánh dấu đã chọn. Giữ lại bằng chứng xác nhận trực tiếp
+    // từ palette để bước hậu kiểm không bỏ qua nhầm bài hợp lệ.
+    return {applied:true,confirmed:true,color:selectedColor,score:selectedScore};
   }
   function trendFitBackgroundText(content,maxChars){
     let value=clean(content).replace(/https?:\/\/\S+/gi,"").replace(/(^|\s)#[\p{L}\p{N}_-]+/gu," ").replace(/\s+/g," ").trim();
-    const max=Math.min(140,Math.max(40,parseInt(maxChars)||100));
+    const max=Math.min(130,Math.max(40,parseInt(maxChars)||100));
     if([...value].length<=max)return value;
     // AI normally repairs an over-limit draft before this guard. If an old
     // pending draft reaches the composer, keep a complete sentence first.
@@ -955,7 +975,9 @@
     return error;
   }
   async function trendTypeAndSubmit(content,groupName,index,anonymousMode,backgroundInput={},lastColor=""){
-    const background=normalizeTrendBackground(backgroundInput);
+    const requestedBackground=normalizeTrendBackground(backgroundInput);
+    const backgroundTooLong=requestedBackground.enabled&&[...String(content||"")].length>requestedBackground.maxChars;
+    const background=backgroundTooLong?{...requestedBackground,enabled:false}:requestedBackground;
     const postContent=background.enabled?trendFitBackgroundText(content,background.maxChars):String(content||"");
     let dialog=await trendOpenComposer(!!anonymousMode,index);
     await trendEnsureAnonymous(dialog,!!anonymousMode,index,groupName);
@@ -964,7 +986,11 @@
     let backgroundResult={applied:false,color:"",reason:t("gp2.bgOff")};
     if(background.enabled){
       backgroundResult=await trendApplyBackground(dialog,background,lastColor);
-      if(!backgroundResult.applied)throw new Error(t("gp2.skippedBySetting",{reason:backgroundResult.reason}));
+      if(!backgroundResult.applied){
+        const error=new Error(t("gp2.skippedBySetting",{reason:backgroundResult.reason}));
+        error.backgroundUnsupported=true;
+        throw error;
+      }
       const rest=TREND_POST_AUTO.afterBgMin*1000+Math.floor(Math.random()*(TREND_POST_AUTO.afterBgMax-TREND_POST_AUTO.afterBgMin+1))*1000;
       if(!await waitWhileActive(rest,postActive))throw new Error(t("gp2.stoppedAfterBg"));
       dialog=await trendWaitStableComposer();
@@ -998,7 +1024,9 @@
     const after=clean(afterNode?.innerText||afterNode?.textContent||afterNode?.value||"");
     if(after.length<10)throw new Error("Facebook chưa nhận nội dung bài viết lại");
     const liveDialog=trendDialog()||dialog,liveEditor=trendEditorIn(liveDialog);
-    if(backgroundResult.applied&&!trendEditorHasBackground(liveEditor,liveDialog))throw new Error(t("gp2.bgDropped"));
+    if(backgroundResult.applied&&!trendEditorHasBackground(liveEditor,liveDialog)&&!backgroundResult.confirmed){
+      throw new Error(t("gp2.bgDropped"));
+    }
     if(!await postActive())throw new Error("Đã dừng trước khi bấm Đăng");
     const scope=trendDialog()||dialog;
     const btn=trendPostButton(scope);
@@ -1024,7 +1052,7 @@
     if(rateLimitMessage)throw trendRateLimitError(rateLimitMessage);
     if(!proof)throw new Error("Facebook chưa xác nhận đăng bài (cần kiểm tra thủ công), dừng để tránh trùng");
     await waitForTrendPostDisplayed(postContent,groupName,{pending:!!pendingConfirmation});
-    return {ok:true,content:postContent,backgroundApplied:backgroundResult.applied,color:backgroundResult.color};
+    return {ok:true,content:postContent,backgroundApplied:backgroundResult.applied,backgroundFallback:backgroundTooLong,color:backgroundResult.color};
   }
 
   async function postRunLegacy(){
@@ -1159,7 +1187,7 @@
       postRunId=String(first.trendPostRunId||"");
       const cfg=first.trendPostConfig;
       if(!first.trendPostActive||!Array.isArray(cfg?.jobs)||!cfg.jobs.length){postLoopActive=false;return;}
-      const total=cfg.jobs.length,groupTotal=Math.max(1,Number(cfg.groups?.length)||1);
+      const total=cfg.jobs.length,groupTotal=Math.max(1,Number(cfg.groups?.length)||1),preSubmitRetries=new Map();
       while(true){
         const s=await chrome.storage.local.get(["trendPostActive","trendPostRunId","trendPostIndex","trendPostDone","trendPostSkipped","trendPostNextAt","trendPostLastColor","trendPostStage","trendPostSubmitIndex","trendPostSubmitDispatchedAt","trendPostFreshRunId","trendPostFreshIndex"]);
         if(!await postActive()){postLoopActive=false;return;}
@@ -1204,6 +1232,7 @@
             await postStatus(`Đang đăng bài ${Number(job.postIndex||0)+1}/${trendJobTotalInGroup(cfg,job)} tại ${group.name} (nhóm ${Number(job.groupIndex||0)+1}/${groupTotal})`);
             const posted=await trendTypeAndSubmit(prepared.draft,group.name,index,!!cfg.anonymousMode,cfg.background,s.trendPostLastColor||"");
             if(!await postActive()){postLoopActive=false;return;}
+            preSubmitRetries.delete(index);
             done++;index++;
             // A single selected source can intentionally feed several target
             // groups. Keep it in the learned list until its last assigned job
@@ -1215,8 +1244,30 @@
             await chrome.storage.local.set({trendPostDone:done,trendPostIndex:index,trendPostLastColor:posted.backgroundApplied?posted.color:(s.trendPostLastColor||""),trendPostStage:"",trendPostSubmitIndex:-1,trendPostSubmitDispatchedAt:0,trendPostStatus:`Đã đăng ${done}/${total}: ${group.name}${posted.backgroundApplied?` — nền ${trendBackgroundColorName(posted.color)}`:""}${consumed?"":" — chưa xóa được bài học, sẽ giữ lại để kiểm tra"}`});
           }catch(e){
             const msg=String(e?.message||e);
-            if(e?.rateLimited||e?.postDisplayUnconfirmed||/chưa xác nhận đăng bài/i.test(msg)){
+            const stageState=await chrome.storage.local.get(["trendPostStage","trendPostSubmitIndex"]);
+            const submitDispatched=(Number(stageState.trendPostSubmitIndex)===index)
+              &&["submit-armed","submitted","waiting-visible","waiting-pending","post-proof-seen","post-visible","post-pending"].includes(String(stageState.trendPostStage||""));
+            if(e?.rateLimited||e?.postDisplayUnconfirmed||submitDispatched||/chưa xác nhận đăng bài/i.test(msg)){
               await postStatus(`Dừng tại ${group.name}: ${msg}`,{trendPostActive:false,trendPostNextAt:0,trendPostIndex:index});
+              postLoopActive=false;return;
+            }
+            const intentionalSkip=!!(e?.anonymousUnsupported||e?.backgroundUnsupported);
+            if(!intentionalSkip){
+              const attempts=Number(preSubmitRetries.get(index)||0);
+              if(attempts<2){
+                preSubmitRetries.set(index,attempts+1);
+                if(trendDialog()&&!await trendCloseComposerForNavigation()){
+                  await postStatus(`Dừng tại ${group.name}: không thể đóng composer lỗi trước khi thử lại`,{trendPostActive:false,trendPostNextAt:0,trendPostIndex:index});
+                  postLoopActive=false;return;
+                }
+                await chrome.storage.local.set({trendPostStage:"",trendPostSubmitIndex:-1,trendPostSubmitDispatchedAt:0,trendPostNextAt:Date.now()+1500,trendPostStatus:`Facebook chưa ổn định ở bài ${Number(job.postIndex||0)+1}/${trendJobTotalInGroup(cfg,job)}; đang thử lại lần ${attempts+1}/2...`});
+                continue;
+              }
+              await postStatus(`Dừng tại ${group.name}: ${msg}`,{trendPostActive:false,trendPostNextAt:0,trendPostIndex:index});
+              postLoopActive=false;return;
+            }
+            if(trendDialog()&&!await trendCloseComposerForNavigation()){
+              await postStatus(`Dừng tại ${group.name}: không thể dọn composer trước khi bỏ qua bài`,{trendPostActive:false,trendPostNextAt:0,trendPostIndex:index});
               postLoopActive=false;return;
             }
             skipped++;index++;

@@ -25,6 +25,8 @@ const tabShare = $("tabShare");
 const tabSales = $("tabSales");
 const tabTrend = $("tabTrend");
 const tabFeed = $("tabFeed");
+const tabSchedule = $("tabSchedule");
+const headerSchedule = $("headerSchedule");
 const panelAdd = $("panelAdd");
 const panelScrape = $("panelScrape");
 const panelGroup = $("panelGroup");
@@ -33,27 +35,35 @@ const panelShare = $("panelShare");
 const panelSales = $("panelSales");
 const panelTrend = $("panelTrend");
 const panelFeed = $("panelFeed");
+const panelSchedule = $("panelSchedule");
+// The Page Care UI is intentionally paused. Its state machines and saved
+// settings remain untouched so this switch can be reversed without data loss.
+const PAGE_UI_ENABLED=false;
 function showTab(which){
-  [tabAdd,tabScrape,tabGroup,tabPage,tabShare,tabSales,tabTrend,tabFeed].forEach(t=>t&&t.classList.remove("active"));
-  [panelAdd,panelScrape,panelGroup,panelPage,panelShare,panelSales,panelTrend,panelFeed].forEach(p=>p&&p.classList.add("hidden"));
+  if(which==="page"&&!PAGE_UI_ENABLED)which="add";
+  [tabAdd,tabScrape,tabGroup,tabPage,tabShare,tabSales,tabTrend,tabFeed,tabSchedule].forEach(t=>t&&t.classList.remove("active"));
+  [panelAdd,panelScrape,panelGroup,panelPage,panelShare,panelSales,panelTrend,panelFeed,panelSchedule].forEach(p=>p&&p.classList.add("hidden"));
   if(which==="add"){ tabAdd.classList.add("active"); panelAdd.classList.remove("hidden"); }
   else if(which==="scrape"){ tabScrape.classList.add("active"); panelScrape.classList.remove("hidden"); }
   else if(which==="group"){ tabGroup.classList.add("active"); panelGroup.classList.remove("hidden"); }
-  else if(which==="page"){ tabPage.classList.add("active"); panelPage.classList.remove("hidden"); try{refreshPageAiSummary();}catch(_){} }
+  else if(which==="page"&&PAGE_UI_ENABLED){ tabPage?.classList.add("active"); panelPage?.classList.remove("hidden"); try{refreshPageAiSummary();}catch(_){} }
   else if(which==="share"){ tabShare.classList.add("active"); panelShare.classList.remove("hidden"); }
   else if(which==="sales"){ tabSales.classList.add("active"); panelSales.classList.remove("hidden"); try{refreshSalesAiSummary();}catch(_){} }
   else if(which==="trend"){ tabTrend.classList.add("active"); panelTrend.classList.remove("hidden"); try{refreshTrendAiSummary();}catch(_){} }
+  else if(which==="schedule"){ tabSchedule.classList.add("active"); panelSchedule.classList.remove("hidden"); try{refreshScheduleList();}catch(_){} }
   else { tabFeed.classList.add("active"); panelFeed.classList.remove("hidden"); }
   try{chrome.storage.local.set({popupLastTab:which});}catch{}
 }
 tabAdd.onclick = () => showTab("add");
 tabScrape.onclick = () => showTab("scrape");
 tabGroup.onclick = () => {showTab("group");refreshUnifiedAiUi();};
-tabPage.onclick = () => {showTab("page");refreshPageAiSummary();};
+if(PAGE_UI_ENABLED&&tabPage)tabPage.onclick = () => {showTab("page");refreshPageAiSummary();};
 tabShare.onclick = () => {showTab("share");refreshShareAiSummary();};
 tabSales.onclick = () => {showTab("sales");refreshSalesAiSummary();};
 tabTrend.onclick = () => {showTab("trend");try{refreshTrendAiSummary();}catch(_){}};
 tabFeed.onclick = () => {showTab("feed");refreshUnifiedAiUi();};
+tabSchedule.onclick = () => showTab("schedule");
+if(headerSchedule) headerSchedule.onclick = () => showTab("schedule");
 
 // Ngôn ngữ giao diện (popup + mọi content script dùng chung qua i18n.js).
 // applyI18n chạy đồng bộ trước mọi lần đọc storage bất đồng bộ nên prompt
@@ -70,6 +80,7 @@ tabFeed.onclick = () => {showTab("feed");refreshUnifiedAiUi();};
       try{updateAiDesc();}catch(_){}
       try{await refreshShareAiSummary();}catch(_){}
       try{const saved=await chrome.storage.local.get("salesPostMedia");renderSalesMediaPreview(saved.salesPostMedia);}catch(_){}
+      try{refreshRunCenter();}catch(_){}
     });
   }
   // Mô tả provider và tóm tắt AI phụ thuộc ngôn ngữ — vẽ lại sau khi biết lang.
@@ -85,24 +96,26 @@ const maxEl = $("maxDelay");
 const maxReqEl = $("maxRequests");
 const friendMinMutual=$("friendMinMutual");
 const friendConfirmMinMutual=$("friendConfirmMinMutual");
-const friendConfirmMinGroups=$("friendConfirmMinGroups");
-const friendConfirmHometown=$("friendConfirmHometown");
-const friendConfirmSchool=$("friendConfirmSchool");
-const friendConfirmRequirePhoto=$("friendConfirmRequirePhoto");
-const friendConfirmSkipUnknown=$("friendConfirmSkipUnknown");
 const statusEl = $("status");
 const countEl = $("count");
 const friendSkippedEl=$("friendSkipped"),friendUncertainEl=$("friendUncertain");
 const friendResetBtn=$("friendResetBtn"),friendClearHistoryBtn=$("friendClearHistoryBtn");
-const friendSuggestionsPanel=$("friendSuggestionsPanel"),friendGroupPanel=$("friendGroupPanel"),friendConfirmPanel=$("friendConfirmPanel"),friendConfirmFilters=$("friendConfirmFilters");
+const friendSuggestionsPanel=$("friendSuggestionsPanel"),friendGroupPanel=$("friendGroupPanel"),friendConfirmPanel=$("friendConfirmPanel"),friendFoFPanel=$("friendFoFPanel"),friendConfirmFilters=$("friendConfirmFilters");
 const friendOpenSuggestionsBtn=$("friendOpenSuggestionsBtn"),friendOpenConfirmBtn=$("friendOpenConfirmBtn"),loadFriendGroupsBtn=$("loadFriendGroupsBtn"),selectAllFriendGroupsBtn=$("selectAllFriendGroupsBtn");
 const friendGroupKeyword=$("friendGroupKeyword"),friendGroupList=$("friendGroupList");
 const friendConfirmResults=$("friendConfirmResults");
 const friendOutgoingMutualWrap=$("friendOutgoingMutualWrap");
 const friendModeButtons=[...document.querySelectorAll(".friend-mode-btn")];
+const friendFoFLinkModeBtn=$("friendFoFLinkModeBtn"),friendFoFMyListModeBtn=$("friendFoFMyListModeBtn");
+const friendFoFLinkPanel=$("friendFoFLinkPanel"),friendFoFMyListPanel=$("friendFoFMyListPanel");
+const friendFoFSourceLink=$("friendFoFSourceLink"),friendFoFLoadMineBtn=$("friendFoFLoadMineBtn"),friendFoFSourceKeyword=$("friendFoFSourceKeyword");
+const friendFoFSourceListEl=$("friendFoFSourceList"),friendFoFScanLinkBtn=$("friendFoFScanLinkBtn"),friendFoFScanSelectedBtn=$("friendFoFScanSelectedBtn");
+const friendFoFStatus=$("friendFoFStatus"),friendFoFCandidateList=$("friendFoFCandidateList");
 let isRunning = false;
 let friendMode="suggestions";
 let friendGroups=[];
+let friendFoFKind="link";
+let friendFoFSources=[];
 
 const friendEsc=value=>String(value||"").replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));
 
@@ -114,25 +127,61 @@ function renderFriendConfirmScan(candidates){
     const color=state==="pass"?"#0b7a35":state==="reject"?"#b42318":"#8a5a00";
     const reason=(candidate.reasonCodes||[]).map(code=>t(`fr.confirmReason_${code}`)||code).join(" · ");
     const mutual=candidate.mutualCount==null?"?":candidate.mutualCount;
-    const groups=candidate.commonGroupCount==null?"?":candidate.commonGroupCount;
-    return `<div style="padding:6px;border-bottom:1px solid #eee;font-size:11px"><b>${friendEsc(candidate.name||candidate.key)}</b><span style="float:right;color:${color};font-weight:700">${friendEsc(t("fr.confirmDecision_"+state))}</span><div style="color:#65676b">${friendEsc(t("fr.confirmEvidence",{mutual,groups}))}</div><div style="color:${color}">${friendEsc(reason||t("fr.confirmNoReason"))}</div></div>`;
+    return `<div style="padding:6px;border-bottom:1px solid #eee;font-size:11px"><b>${friendEsc(candidate.name||candidate.key)}</b><span style="float:right;color:${color};font-weight:700">${friendEsc(t("fr.confirmDecision_"+state))}</span><div style="color:#65676b">${friendEsc(t("fr.confirmEvidence",{mutual}))}</div><div style="color:${color}">${friendEsc(reason||t("fr.confirmNoReason"))}</div></div>`;
+  }).join("");
+}
+
+function setFriendFoFKind(kind){
+  friendFoFKind=kind==="mine"?"mine":"link";
+  friendFoFLinkModeBtn.classList.toggle("active",friendFoFKind==="link");
+  friendFoFMyListModeBtn.classList.toggle("active",friendFoFKind==="mine");
+  friendFoFLinkPanel.classList.toggle("hidden",friendFoFKind!=="link");
+  friendFoFMyListPanel.classList.toggle("hidden",friendFoFKind!=="mine");
+  chrome.storage.sync.set({friendFoFKind});
+}
+
+function selectedFriendFoFSource(){
+  const key=friendFoFSourceListEl.querySelector(".friend-fof-source-radio:checked")?.value||"";
+  return friendFoFSources.find(source=>String(source.key)===String(key))||null;
+}
+
+function renderFriendFoFSources(sources,selectedKey=""){
+  friendFoFSources=Array.isArray(sources)?sources.filter(source=>source?.key&&source.url):[];
+  const key=selectedKey||"";
+  if(!friendFoFSources.length){friendFoFSourceListEl.innerHTML='<div class="hint" style="padding:6px">'+friendEsc(t("fr.fofNoSources"))+'</div>';return;}
+  friendFoFSourceListEl.innerHTML=friendFoFSources.map((source,index)=>`<label data-name="${friendEsc(String(source.name||"").toLocaleLowerCase("vi"))}" style="display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid #eee;cursor:pointer"><input class="friend-fof-source-radio" type="radio" name="friendFoFSource" value="${friendEsc(source.key)}" ${String(source.key)===String(key)?"checked":""} style="width:auto"><span style="display:flex;flex-direction:column;min-width:0"><b style="font-size:12px;overflow:hidden;text-overflow:ellipsis">${friendEsc(source.name||t("fr.fofSourceFallback",{n:index+1}))}</b><small style="color:#65676b;overflow:hidden;text-overflow:ellipsis">${friendEsc(source.url)}</small></span></label>`).join("");
+}
+
+function renderFriendFoFCandidates(candidates){
+  const rows=Array.isArray(candidates)?candidates:[];
+  if(!rows.length){friendFoFCandidateList.innerHTML='<div class="hint" style="padding:6px">'+friendEsc(t("fr.fofNoCandidates"))+'</div>';return;}
+  friendFoFCandidateList.innerHTML=rows.map(candidate=>{
+    const sources=Array.isArray(candidate.sourceNames)&&candidate.sourceNames.length?candidate.sourceNames.join(", "):candidate.sourceName||t("fr.fofUnknownSource");
+    return `<div style="padding:6px;border-bottom:1px solid #eee;font-size:11px"><b>${friendEsc(candidate.name||candidate.key)}</b><div style="color:#65676b">${friendEsc(t("fr.fofFoundVia",{name:sources}))}</div></div>`;
   }).join("");
 }
 
 function setFriendMode(mode){
   if(isRunning&&mode!==friendMode){statusEl.textContent=t("p.frModeLocked");return;}
-  friendMode=["suggestions","group-common","confirm"].includes(mode)?mode:"suggestions";
+  friendMode=["suggestions","group-common","confirm","friend-of-friend"].includes(mode)?mode:"suggestions";
   friendModeButtons.forEach(button=>button.classList.toggle("active",button.dataset.friendMode===friendMode));
   friendSuggestionsPanel.classList.toggle("hidden",friendMode!=="suggestions");
   friendGroupPanel.classList.toggle("hidden",friendMode!=="group-common");
   friendConfirmPanel.classList.toggle("hidden",friendMode!=="confirm");
+  friendFoFPanel.classList.toggle("hidden",friendMode!=="friend-of-friend");
   friendConfirmFilters.classList.toggle("hidden",friendMode!=="confirm");
-  friendOutgoingMutualWrap.classList.toggle("hidden",friendMode==="confirm");
+  friendOutgoingMutualWrap.classList.toggle("hidden",friendMode==="confirm"||friendMode==="friend-of-friend");
+  // The generic preview action is read-only for the other friend modes. The
+  // FoF mode has direct-send buttons and must never route a preview click into
+  // the real invitation state machine.
+  scanBtn.classList.toggle("hidden",friendMode==="friend-of-friend");
   chrome.storage.sync.set({friendMode});
   updateCount();
 }
 
 friendModeButtons.forEach(button=>button.addEventListener("click",()=>setFriendMode(button.dataset.friendMode)));
+friendFoFLinkModeBtn.onclick=()=>setFriendFoFKind("link");
+friendFoFMyListModeBtn.onclick=()=>setFriendFoFKind("mine");
 
 function selectedFriendGroups(){
   const ids=[...friendGroupList.querySelectorAll(".friend-group-check:checked")].map(box=>box.value);
@@ -155,58 +204,52 @@ function saveConfig() {
     mode:friendMode,
     groups:selectedFriendGroups(),
     confirmFilters:{
-      minMutual:Math.max(0,parseInt(friendConfirmMinMutual.value)||0),
-      minCommonGroups:Math.max(0,parseInt(friendConfirmMinGroups.value)||0),
-      hometown:String(friendConfirmHometown.value||"").trim(),
-      school:String(friendConfirmSchool.value||"").trim(),
-      requirePhoto:!!friendConfirmRequirePhoto.checked,
-      skipUnknown:!!friendConfirmSkipUnknown.checked
+      minMutual:Math.max(0,parseInt(friendConfirmMinMutual.value)||0)
     }
   };
   chrome.storage.sync.set({
     minDelay:cfg.minDelay,maxDelay:cfg.maxDelay,maxRequests:cfg.maxRequests,
-    friendMinMutual:cfg.minMutual,friendMode:cfg.mode,friendGroupIds:cfg.groups.map(g=>String(g.id)),
-    friendConfirmMinMutual:cfg.confirmFilters.minMutual,
-    friendConfirmMinGroups:cfg.confirmFilters.minCommonGroups,
-    friendConfirmHometown:cfg.confirmFilters.hometown,
-    friendConfirmSchool:cfg.confirmFilters.school,
-    friendConfirmRequirePhoto:cfg.confirmFilters.requirePhoto,
-    friendConfirmSkipUnknown:cfg.confirmFilters.skipUnknown
+    friendMinMutual:cfg.minMutual,friendMode:cfg.mode,friendGroupIds:cfg.groups.map(g=>String(g.id)),friendFoFKind,friendFoFSourceLink:friendFoFSourceLink.value.trim(),friendFoFSourceKeyword:friendFoFSourceKeyword.value.trim(),
+    friendConfirmMinMutual:cfg.confirmFilters.minMutual
   });
+  chrome.storage.sync.remove(["friendConfirmMinGroups","friendConfirmHometown","friendConfirmSchool","friendConfirmRequirePhoto","friendConfirmSkipUnknown"]);
   return cfg;
 }
 
 async function loadConfig() {
   const [sync,local]=await Promise.all([
-    chrome.storage.sync.get(["minDelay","maxDelay","maxRequests","friendMinMutual","friendMode","friendGroupIds","friendConfirmMinMutual","friendConfirmMinGroups","friendConfirmHometown","friendConfirmSchool","friendConfirmRequirePhoto","friendConfirmSkipUnknown"]),
-    chrome.storage.local.get(["joinedGroups","friendRunState","sentCount","isRunning","friendStatus","friendSkipped","friendUncertain","friendConfirmRunState","friendConfirmAccepted","friendConfirmActive","friendConfirmSkipped","friendConfirmUncertain","friendConfirmStatus"])
+    chrome.storage.sync.get(["minDelay","maxDelay","maxRequests","friendMinMutual","friendMode","friendGroupIds","friendConfirmMinMutual","friendFoFKind","friendFoFSourceLink","friendFoFSourceKeyword"]),
+    chrome.storage.local.get(["joinedGroups","friendRunState","sentCount","isRunning","friendStatus","friendSkipped","friendUncertain","friendConfirmRunState","friendConfirmAccepted","friendConfirmActive","friendConfirmSkipped","friendConfirmUncertain","friendConfirmStatus","friendFoFScanState","friendFoFScanActive","friendFoFRunState","friendFoFActive","friendFoFSourceList","friendFoFSelectedSource","friendFoFCandidates","friendFoFStatus","friendFoFSourceScanned","friendFoFCandidateCount","friendFoFSent","friendFoFSkipped","friendFoFUncertain"])
   ]);
   if(sync.minDelay)minEl.value=Math.round(sync.minDelay/1000);
   if(sync.maxDelay)maxEl.value=Math.round(sync.maxDelay/1000);
   if(sync.maxRequests)maxReqEl.value=sync.maxRequests;
   if(sync.friendMinMutual!==undefined)friendMinMutual.value=sync.friendMinMutual;
   if(sync.friendConfirmMinMutual!==undefined)friendConfirmMinMutual.value=sync.friendConfirmMinMutual;
-  if(sync.friendConfirmMinGroups!==undefined)friendConfirmMinGroups.value=sync.friendConfirmMinGroups;
-  if(sync.friendConfirmHometown!==undefined)friendConfirmHometown.value=sync.friendConfirmHometown;
-  if(sync.friendConfirmSchool!==undefined)friendConfirmSchool.value=sync.friendConfirmSchool;
-  if(sync.friendConfirmRequirePhoto!==undefined)friendConfirmRequirePhoto.checked=!!sync.friendConfirmRequirePhoto;
-  if(sync.friendConfirmSkipUnknown!==undefined)friendConfirmSkipUnknown.checked=!!sync.friendConfirmSkipUnknown;
-  const restoredMode=local.friendConfirmActive||local.friendConfirmRunState?.active?"confirm":(sync.friendMode||local.friendRunState?.mode||"suggestions");
+  if(sync.friendFoFSourceLink!==undefined)friendFoFSourceLink.value=sync.friendFoFSourceLink;
+  if(sync.friendFoFSourceKeyword!==undefined)friendFoFSourceKeyword.value=sync.friendFoFSourceKeyword;
+  setFriendFoFKind(sync.friendFoFKind||"link");
+  renderFriendFoFSources(local.friendFoFSourceList||[],local.friendFoFSelectedSource?.key||"");
+  friendFoFSourceKeyword.oninput();
+  renderFriendFoFCandidates(local.friendFoFCandidates||[]);
+  if(local.friendFoFStatus)friendFoFStatus.textContent=local.friendFoFStatus;
+  const restoredMode=local.friendFoFActive||local.friendFoFScanActive||local.friendFoFRunState?.active||local.friendFoFScanState?.active?"friend-of-friend":(local.friendConfirmActive||local.friendConfirmRunState?.active?"confirm":(sync.friendMode||local.friendRunState?.mode||"suggestions"));
   setFriendMode(restoredMode);
   renderFriendGroups(local.joinedGroups||[],sync.friendGroupIds||[]);
-  setRunning(restoredMode==="confirm"?!!local.friendConfirmActive:!!local.isRunning);
+  setRunning(restoredMode==="confirm"?!!local.friendConfirmActive:restoredMode==="friend-of-friend"?!!(local.friendFoFActive||local.friendFoFScanActive):!!local.isRunning);
   updateCount();
 }
 
 function updateCount() {
-  chrome.storage.local.get(["sentCount","isRunning","friendStatus","lastMessage","friendSkipped","friendUncertain","friendConfirmAccepted","friendConfirmActive","friendConfirmStatus","friendConfirmSkipped","friendConfirmUncertain"], res => {
+  chrome.storage.local.get(["sentCount","isRunning","friendStatus","lastMessage","friendSkipped","friendUncertain","friendConfirmAccepted","friendConfirmActive","friendConfirmStatus","friendConfirmSkipped","friendConfirmUncertain","friendFoFSent","friendFoFActive","friendFoFStatus","friendFoFSkipped","friendFoFUncertain","friendFoFCandidateCount"], res => {
     const confirming=friendMode==="confirm";
-    const sent = confirming ? (res.friendConfirmAccepted||0) : (res.sentCount||0);
+    const fof=friendMode==="friend-of-friend";
+    const sent = confirming ? (res.friendConfirmAccepted||0) : fof ? (res.friendFoFSent||0) : (res.sentCount||0);
     const max = parseInt(maxReqEl.value) || 10;
     countEl.textContent = `${sent} / ${max}`;
-    friendSkippedEl.textContent=confirming?(res.friendConfirmSkipped||0):(res.friendSkipped||0);
-    friendUncertainEl.textContent=confirming?(res.friendConfirmUncertain||0):(res.friendUncertain||0);
-    const status=confirming?(res.friendConfirmStatus||""):(res.friendStatus||res.lastMessage||"");
+    friendSkippedEl.textContent=confirming?(res.friendConfirmSkipped||0):fof?(res.friendFoFSkipped||0):(res.friendSkipped||0);
+    friendUncertainEl.textContent=confirming?(res.friendConfirmUncertain||0):fof?(res.friendFoFUncertain||0):(res.friendUncertain||0);
+    const status=confirming?(res.friendConfirmStatus||""):fof?(res.friendFoFStatus||""):(res.friendStatus||res.lastMessage||"");
     if(status)statusEl.textContent=status;
   });
 }
@@ -214,6 +257,7 @@ function setRunning(running) {
   isRunning = running;
   startBtn.textContent = running ? t("c.stop") : t("fr.start");
   startBtn.classList.toggle("running", running);
+  [friendFoFScanLinkBtn,friendFoFScanSelectedBtn,friendFoFLoadMineBtn].forEach(button=>button.disabled=!!running);
 }
 async function getActiveTab() {
   // The extension popup can be hosted in a separate Chrome popup window.
@@ -236,20 +280,26 @@ async function getActiveTab() {
   return facebookTabs.find(isFacebookTab)||null;
 }
 async function autoReloadAndRetry(tabId, msg, statusEl){
+  const sendOnce=()=>new Promise(resolve=>{
+    chrome.tabs.sendMessage(tabId,msg,res=>{
+      resolve(chrome.runtime.lastError?{ok:false}:{ok:true,res});
+    });
+  });
+  // A healthy content script must receive the first message directly. Reloading
+  // first closes the popup on some Chrome builds, so loaders never get the
+  // response needed to save a newly scanned list.
+  const first=await sendOnce();
+  if(first.ok) return first;
   statusEl.textContent = t("p.autoReload");
   try{ await chrome.tabs.reload(tabId); }catch{}
   await new Promise(r=>setTimeout(r, 3500));
-  return new Promise(resolve=>{
-    chrome.tabs.sendMessage(tabId, msg, res=>{
-      if(chrome.runtime.lastError){
-        statusEl.textContent = t("p.reloading");
-        setTimeout(()=> chrome.tabs.sendMessage(tabId, msg, res2=>{
-          if(chrome.runtime.lastError) { statusEl.textContent=t("p.noConnRetry"); resolve({ok:false}); }
-          else resolve({ok:true, res:res2});
-        }), 2000);
-      } else resolve({ok:true, res});
-    });
-  });
+  const retry=await sendOnce();
+  if(retry.ok) return retry;
+  statusEl.textContent = t("p.reloading");
+  await new Promise(r=>setTimeout(r,2000));
+  const last=await sendOnce();
+  if(!last.ok) statusEl.textContent=t("p.noConnRetry");
+  return last;
 }
 
 function friendTargetUrl(cfg){
@@ -282,6 +332,12 @@ async function ensureTaskTab(targetUrl,statusEl,statusText,routeMatches,beforeNa
   // the active tab while the target route was loading.
   try{return await chrome.tabs.get(tab.id);}catch{return null;}
 }
+function isJoinedGroupHomeUrl(url){
+  try{
+    const u=new URL(url),parts=u.pathname.split("/").filter(Boolean);
+    return (u.hostname==="facebook.com"||u.hostname.endsWith(".facebook.com"))&&parts.length===2&&parts[0].toLowerCase()==="groups"&&!new Set(["feed","joins","discover","create","notifications","your_groups"]).has(parts[1].toLowerCase());
+  }catch{return false;}
+}
 // Quy tắc chung: persist phiên TRƯỚC khi chuyển trang/gửi lệnh để tab tự
 // resume sau mọi điều hướng/reload/gửi hụt. Khi gửi thất bại, chỉ coi là lỗi
 // nếu cờ chạy đã tắt (từ chối thật); cờ còn bật nghĩa là phiên đang tự chạy.
@@ -313,7 +369,73 @@ async function sendFriendCommand(tab,msg){
   }));
 }
 
+function friendFoFConfig(){
+  const minSeconds=Math.max(1,parseInt(minEl.value)||5);
+  const maxSeconds=Math.max(1,parseInt(maxEl.value)||15);
+  return {
+    mode:"friend-of-friend",
+    minDelay:minSeconds*1000,
+    maxDelay:maxSeconds*1000,
+    maxRequests:Math.max(1,Math.min(100,parseInt(maxReqEl.value)||10))
+  };
+}
+
+async function sendFriendFoFAction(message){
+  const tab=await getActiveTab();
+  if(!tab?.url?.includes("facebook.com")){friendFoFStatus.textContent=t("p.frFoFNeedFb");return null;}
+  const response=await sendFriendCommand(tab,message);
+  if(!response?.ok)friendFoFStatus.textContent=response?.error||t("p.frFoFScanFail");
+  return response;
+}
+
+async function scanFriendFoFOwnList(){
+  friendFoFStatus.textContent=t("p.frFoFScanningOwn");
+  const response=await sendFriendFoFAction({action:"friendFoFScanOwn"});
+  if(response?.ok){setRunning(true);friendFoFStatus.textContent=t("p.frFoFScanningOwn");}
+}
+
+async function scanFriendFoFSource(){
+  if(isRunning)return;
+  const config=friendFoFConfig();
+  if(config.minDelay>config.maxDelay){friendFoFStatus.textContent=t("p.gjBadDelay");return;}
+  let source=null;
+  if(friendFoFKind==="link"){
+    const url=friendFoFSourceLink.value.trim();
+    if(!url){friendFoFStatus.textContent=t("p.frFoFNeedLink");return;}
+    try{
+      const parsed=new URL(url);
+      const host=String(parsed.hostname||"").toLowerCase().replace(/\.$/,"");
+      if(!(host==="facebook.com"||host.endsWith(".facebook.com")))throw new Error("facebook");
+    }catch{friendFoFStatus.textContent=t("p.frFoFBadLink");return;}
+    source={url};
+  }else{
+    source=selectedFriendFoFSource();
+    if(!source){friendFoFStatus.textContent=t("p.frFoFNeedSource");return;}
+  }
+  await chrome.storage.sync.set({friendFoFKind,friendFoFSourceLink:friendFoFSourceLink.value.trim()});
+  if(friendFoFKind==="mine")await chrome.storage.local.set({friendFoFSelectedSource:source});
+  setRunning(true);
+  try{
+    const response=await sendFriendFoFAction({action:"friendFoFStart",config:{...config,source}});
+    if(response?.ok){friendFoFStatus.textContent=t("p.frFoFSending");}
+    else setRunning(false);
+  }catch(error){setRunning(false);friendFoFStatus.textContent=error.message;}
+}
+
+async function startFriendFoFSend(){
+  await scanFriendFoFSource();
+}
+
 startBtn.addEventListener("click", async () => {
+  if(friendMode==="friend-of-friend"){
+    if(isRunning){
+      await chrome.storage.local.set({friendFoFActive:false,friendFoFScanActive:false,friendFoFStatus:t("p.frStoppedByUser")});
+      broadcastToFacebookTabs({action:"friendFoFStop"});
+      setRunning(false);updateCount();return;
+    }
+    await startFriendFoFSend();
+    return;
+  }
   if(isRunning){
     if(friendMode==="confirm"){
       const stored=await chrome.storage.local.get("friendConfirmRunState"),state=stored.friendConfirmRunState||{};
@@ -333,7 +455,7 @@ startBtn.addEventListener("click", async () => {
   const {cfg,tab:initialTab}=await buildFriendConfig();
   if(cfg.minDelay>cfg.maxDelay){statusEl.textContent=t("p.gjBadDelay");return;}
   if(cfg.mode==="group-common"&&!cfg.groups.length){statusEl.textContent=t("p.frNeedGroups");return;}
-  const busyOther=await chrome.storage.local.get(["isRunning","friendConfirmActive","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","groupInteractActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);
+  const busyOther=await chrome.storage.local.get(["isRunning","friendConfirmActive","friendFoFActive","friendFoFScanActive","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","groupInteractActive","groupCommentActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);
   if(Object.values(busyOther).some(Boolean)){statusEl.textContent=t("c.frBusyOther");return;}
   const targetUrl=friendTargetUrl(cfg);
   const friendRunId=`friend-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
@@ -346,7 +468,7 @@ startBtn.addEventListener("click", async () => {
     url=>{try{return new URL(url).pathname.replace(/\/$/,"")===new URL(targetUrl).pathname.replace(/\/$/,"");}catch{return false;}},
     async owner=>{
       if(confirming){
-        await chrome.storage.local.set({friendConfirmActive:true,friendConfirmAccepted:0,friendConfirmSkipped:0,friendConfirmUncertain:0,friendConfirmRunState:{active:true,runId:friendRunId,ownerTabId:owner.id,mode:cfg.mode,config:cfg,acceptedCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],emptyRounds:0,sourceReloads:0,nextAllowedAt:Date.now()+friendDelayMs,stage:"list",pendingProfile:null,profileEvidenceByKey:{},status:t("c.frConfirmPreparing"),startedAt:Date.now()},friendConfirmStatus:t("c.frConfirmPreparing")});
+        await chrome.storage.local.set({friendConfirmActive:true,friendConfirmAccepted:0,friendConfirmSkipped:0,friendConfirmUncertain:0,friendConfirmRunState:{active:true,runId:friendRunId,ownerTabId:owner.id,mode:cfg.mode,config:cfg,acceptedCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],emptyRounds:0,sourceReloads:0,nextAllowedAt:Date.now()+friendDelayMs,status:t("c.frConfirmPreparing"),startedAt:Date.now()},friendConfirmStatus:t("c.frConfirmPreparing")});
       }else{
         await chrome.storage.local.set({isRunning:true,sentCount:0,friendSkipped:0,friendUncertain:0,friendRunState:{active:true,runId:friendRunId,ownerTabId:owner.id,mode:cfg.mode,config:cfg,sentCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],groupIndex:0,emptyRounds:0,sourceReloads:0,nextAllowedAt:Date.now()+friendDelayMs,groupWaitKey:"",groupWaitStartedAt:0,status:t("c.frPreparing"),startedAt:Date.now()},friendStatus:t("c.frPreparing")});
       }
@@ -369,6 +491,9 @@ startBtn.addEventListener("click", async () => {
 });
 
 scanBtn.addEventListener("click", async () => {
+  if(friendMode==="friend-of-friend"){
+    return;
+  }
   const {cfg,tab}=await buildFriendConfig();
   if(cfg.mode==="group-common"&&!cfg.groups.length){statusEl.textContent=t("p.frNeedScanGroups");return;}
   if(!tab?.url?.includes("facebook.com")){statusEl.textContent=t("p.frNeedFb");return;}
@@ -400,6 +525,18 @@ scanBtn.addEventListener("click", async () => {
 
 friendOpenSuggestionsBtn.onclick=async()=>{const tab=await getActiveTab();if(tab)await chrome.tabs.update(tab.id,{url:"https://www.facebook.com/friends/suggestions"});};
 friendOpenConfirmBtn.onclick=async()=>{const tab=await getActiveTab();if(tab)await chrome.tabs.update(tab.id,{url:"https://www.facebook.com/friends/requests"});};
+friendFoFLoadMineBtn.onclick=scanFriendFoFOwnList;
+friendFoFScanLinkBtn.onclick=async()=>{setFriendFoFKind("link");await scanFriendFoFSource();};
+friendFoFScanSelectedBtn.onclick=async()=>{setFriendFoFKind("mine");await scanFriendFoFSource();};
+friendFoFSourceKeyword.oninput=()=>{
+  const key=friendFoFSourceKeyword.value.trim().toLocaleLowerCase("vi");
+  friendFoFSourceListEl.querySelectorAll("label[data-name]").forEach(row=>{row.style.display=!key||row.dataset.name.includes(key)?"flex":"none";});
+};
+friendFoFSourceListEl.addEventListener("change",event=>{
+  if(!event.target.classList.contains("friend-fof-source-radio"))return;
+  const source=selectedFriendFoFSource();
+  if(source)chrome.storage.local.set({friendFoFSelectedSource:source});
+});
 
 loadFriendGroupsBtn.onclick=async()=>{
   let tab=await getActiveTab();if(!tab)return;
@@ -427,9 +564,19 @@ friendGroupKeyword.oninput=()=>{const key=friendGroupKeyword.value.trim().toLoca
 friendGroupList.addEventListener("change",event=>{if(event.target.classList.contains("friend-group-check"))saveConfig();});
 
 friendResetBtn.onclick=async()=>{
+  if(friendMode==="friend-of-friend"){
+    const saved=await chrome.storage.local.get(["friendFoFRunState","friendFoFScanState"]);
+    const run=saved.friendFoFRunState&&typeof saved.friendFoFRunState==="object"?{...saved.friendFoFRunState,active:false,nextAllowedAt:0,candidateIndex:0,sentCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],currentCandidateKey:"",currentStage:""}:{active:false,candidateIndex:0,sentCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],currentCandidateKey:"",currentStage:""};
+    const scan=saved.friendFoFScanState&&typeof saved.friendFoFScanState==="object"?{...saved.friendFoFScanState,active:false}:{active:false};
+    await chrome.storage.local.set({friendFoFActive:false,friendFoFScanActive:false,friendFoFSent:0,friendFoFSkipped:0,friendFoFUncertain:0,friendFoFStatus:t("p.frResetDone"),friendFoFRunState:run,friendFoFScanState:scan});
+    const tab=await getActiveTab();
+    if(tab?.url?.includes("facebook.com"))await sendFriendCommand(tab,{action:"friendFoFReset"});
+    broadcastToFacebookTabs({action:"friendFoFReset"});
+    setRunning(false);updateCount();return;
+  }
   if(friendMode==="confirm"){
     const saved=await chrome.storage.local.get("friendConfirmRunState");
-    const state=saved.friendConfirmRunState&&typeof saved.friendConfirmRunState==="object"?{...saved.friendConfirmRunState,active:false,nextAllowedAt:0,acceptedCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],emptyRounds:0,sourceReloads:0,stage:"list",pendingProfile:null,profileEvidenceByKey:{}}:{active:false,nextAllowedAt:0,acceptedCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],stage:"list",profileEvidenceByKey:{}};
+    const state=saved.friendConfirmRunState&&typeof saved.friendConfirmRunState==="object"?{...saved.friendConfirmRunState,active:false,nextAllowedAt:0,acceptedCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],emptyRounds:0,sourceReloads:0}:{active:false,nextAllowedAt:0,acceptedCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[]};
     await chrome.storage.local.set({friendConfirmActive:false,friendConfirmAccepted:0,friendConfirmSkipped:0,friendConfirmUncertain:0,friendConfirmStatus:t("p.frResetDone"),friendConfirmRunState:state});
   }else{
     const saved=await chrome.storage.local.get("friendRunState");
@@ -446,30 +593,42 @@ friendResetBtn.onclick=async()=>{
 };
 friendClearHistoryBtn.onclick=async()=>{
   if(!confirm(t("p.frClearConfirm")))return;
-  await chrome.storage.local.remove(friendMode==="confirm"?"friendConfirmHistory":"friendProfileHistory");
+  await chrome.storage.local.remove(friendMode==="confirm"?"friendConfirmHistory":friendMode==="friend-of-friend"?"friendFoFHistory":"friendProfileHistory");
   statusEl.textContent=t("p.frClearDone");
 };
 
 chrome.storage.onChanged.addListener(changes => {
-  if (changes.sentCount||changes.friendConfirmAccepted||changes.friendConfirmActive||changes.friendStatus||changes.friendConfirmStatus) updateCount();
-  if (changes.isRunning&&friendMode!=="confirm") setRunning(changes.isRunning.newValue);
+  if (changes.sentCount||changes.friendConfirmAccepted||changes.friendConfirmActive||changes.friendStatus||changes.friendConfirmStatus||changes.friendFoFSent||changes.friendFoFActive||changes.friendFoFStatus||changes.friendFoFCandidateCount||changes.friendFoFSkipped||changes.friendFoFUncertain) updateCount();
+  if(changes.friendFoFCandidates)renderFriendFoFCandidates(changes.friendFoFCandidates.newValue||[]);
+  if(changes.friendFoFSourceList){
+    chrome.storage.local.get("friendFoFSelectedSource",saved=>{
+      const selectedKey=saved.friendFoFSelectedSource?.key||selectedFriendFoFSource()?.key||"";
+      renderFriendFoFSources(changes.friendFoFSourceList.newValue||[],selectedKey);
+      friendFoFSourceKeyword.oninput();
+    });
+  }
+  if(changes.friendFoFStatus&&friendMode==="friend-of-friend")friendFoFStatus.textContent=changes.friendFoFStatus.newValue||"";
+  if(changes.friendFoFActive&&friendMode==="friend-of-friend")setRunning(changes.friendFoFActive.newValue);
+  if(changes.friendFoFScanActive&&friendMode==="friend-of-friend")setRunning(changes.friendFoFScanActive.newValue||!!changes.friendFoFActive?.newValue);
+  if (changes.isRunning&&friendMode!=="confirm"&&friendMode!=="friend-of-friend") setRunning(changes.isRunning.newValue);
   if (changes.friendConfirmActive&&friendMode==="confirm") setRunning(changes.friendConfirmActive.newValue);
-  if (changes.friendStatus&&friendMode!=="confirm") statusEl.textContent = changes.friendStatus.newValue;
+  if (changes.friendStatus&&friendMode!=="confirm"&&friendMode!=="friend-of-friend") statusEl.textContent = changes.friendStatus.newValue;
   else if (changes.friendConfirmStatus&&friendMode==="confirm") statusEl.textContent = changes.friendConfirmStatus.newValue;
-  else if (changes.lastMessage&&friendMode!=="confirm") statusEl.textContent = changes.lastMessage.newValue;
-  if(changes.friendSkipped&&friendMode!=="confirm")friendSkippedEl.textContent=changes.friendSkipped.newValue||0;
-  if(changes.friendUncertain&&friendMode!=="confirm")friendUncertainEl.textContent=changes.friendUncertain.newValue||0;
+  else if (changes.lastMessage&&friendMode!=="confirm"&&friendMode!=="friend-of-friend") statusEl.textContent = changes.lastMessage.newValue;
+  if(changes.friendSkipped&&friendMode!=="confirm"&&friendMode!=="friend-of-friend")friendSkippedEl.textContent=changes.friendSkipped.newValue||0;
+  if(changes.friendUncertain&&friendMode!=="confirm"&&friendMode!=="friend-of-friend")friendUncertainEl.textContent=changes.friendUncertain.newValue||0;
   if(changes.friendConfirmSkipped&&friendMode==="confirm")friendSkippedEl.textContent=changes.friendConfirmSkipped.newValue||0;
   if(changes.friendConfirmUncertain&&friendMode==="confirm")friendUncertainEl.textContent=changes.friendConfirmUncertain.newValue||0;
   if (changes.scrapeCount) { $("scrapeCount").textContent = t("sc.countPosts",{n:changes.scrapeCount.newValue}); }
   if (changes.scrapeStatus) { $("scrapeStatus").textContent = changes.scrapeStatus.newValue; }
   if (changes.groupStatus) { $("groupStatus").textContent = changes.groupStatus.newValue; }
+  if (changes.groupAiUsage) { $("groupAiUsage").textContent = changes.groupAiUsage.newValue; }
   if (changes.groupJoined !== undefined) { const t=parseInt($("groupTarget").value)||10; $("groupCount").textContent = `${changes.groupJoined.newValue} / ${t}`; }
   if (changes.groupFound !== undefined) { /* optional */ }
   if (changes.isGroupJoining !== undefined) setGroupRunning(changes.isGroupJoining.newValue);
 });
 loadConfig();
-[minEl,maxEl,maxReqEl,friendMinMutual,friendConfirmMinMutual,friendConfirmMinGroups,friendConfirmHometown,friendConfirmSchool,friendConfirmRequirePhoto,friendConfirmSkipUnknown].forEach(el=>el.addEventListener("change",saveConfig));
+[minEl,maxEl,maxReqEl,friendMinMutual,friendConfirmMinMutual].forEach(el=>el.addEventListener("change",saveConfig));
 
 // SCRAPE - khong tu tai, chon format moi tai
 const scrapeBtn = $("scrapeBtn");
@@ -661,7 +820,7 @@ function setPageMode(mode){
 }
 function setPageRunning(value){
   pageJoinRunning=!!value;
-  pageGroupStartBtn.textContent=pageJoinRunning?t("p.pgBusy"):t("pg.start");
+  pageGroupStartBtn.textContent=pageJoinRunning?t("pg.busy"):t("pg.start");
   pageGroupStartBtn.classList.toggle("running",pageJoinRunning);
 }
 async function refreshPageAiSummary(){
@@ -700,7 +859,7 @@ pageGroupAiEnabled.addEventListener("change",()=>chrome.storage.sync.set({pageGr
 pageGroupKeyword.addEventListener("change",()=>chrome.storage.sync.set({pageGroupKeyword:pageGroupKeyword.value}));
 pageGroupAiPrompt.addEventListener("change",()=>chrome.storage.sync.set({pageGroupAiPrompt:pageGroupAiPrompt.value}));
 async function pageBusyWithOtherRun(){
-  const keys=["isRunning","friendConfirmActive","isScraping","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"];
+  const keys=["isRunning","friendConfirmActive","friendFoFActive","friendFoFScanActive","isScraping","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupCommentActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"];
   const state=await chrome.storage.local.get(keys);return keys.some(key=>!!state[key]);
 }
 pageGroupStartBtn.onclick=async()=>{
@@ -786,7 +945,7 @@ async function pageGroupPostTargets(){
   const seen=new Set();return rows.filter(row=>row.status==="confirmed"&&(!selectedKey||row.pageKey===selectedKey)&&row.groupKey&&!seen.has(row.groupKey)&&seen.add(row.groupKey)).map(row=>({key:row.groupKey,url:`https://www.facebook.com${row.groupKey}/`,name:""}));
 }
 async function pageFeatureBusy(){
-  const state=await chrome.storage.local.get(["isRunning","friendConfirmActive","isScraping","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"]);
+    const state=await chrome.storage.local.get(["isRunning","friendConfirmActive","friendFoFActive","friendFoFScanActive","isScraping","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupCommentActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"]);
   return Object.values(state).some(Boolean);
 }
 function pageStoreMessage(message){return new Promise(resolve=>chrome.runtime.sendMessage(message,response=>resolve(response||{ok:false})));}
@@ -928,6 +1087,7 @@ const groupMinPosts = $("groupMinPosts");
 const groupTarget = $("groupTarget");
 const groupMinDelay = $("groupMinDelay");
 const groupMaxDelay = $("groupMaxDelay");
+const groupConfirmWait = $("groupConfirmWait");
 const groupAnswers = $("groupAnswers");
 const groupAiAnswersEnabled=$("groupAiAnswersEnabled"),groupAiAnswersPrompt=$("groupAiAnswersPrompt");
 const groupStartBtn = $("groupStartBtn");
@@ -935,6 +1095,7 @@ const groupStopBtn = $("groupStopBtn");
 const groupResetBtn = $("groupResetBtn");
 const groupStatus = $("groupStatus");
 const groupCount = $("groupCount");
+const groupAiUsage=$("groupAiUsage");
 
 // Prompt được lưu ngay khi người dùng chỉnh sửa, không đợi bấm nút chạy.
 // Dùng debounce nhẹ để không ghi storage cho từng phím ở tốc độ quá nhanh.
@@ -970,6 +1131,7 @@ bindPromptPersistence("groupAiAnswersPrompt",groupAiAnswersPrompt);
 const discoverTarget = $("discoverTarget");
 const discoverMinDelay = $("discoverMinDelay");
 const discoverMaxDelay = $("discoverMaxDelay");
+const discoverConfirmWait = $("discoverConfirmWait");
 const discoverAnswers = $("discoverAnswers");
 const discoverStartBtn = $("discoverStartBtn");
 const discoverStopBtn = $("discoverStopBtn");
@@ -977,6 +1139,20 @@ const discoverResetBtn = $("discoverResetBtn");
 const discoverStatus = $("discoverStatus");
 const discoverCount = $("discoverCount");
 let isGroupJoining=false;
+const JOIN_CONFIRM_DEFAULT_SECONDS=90;
+const JOIN_CONFIRM_MIN_SECONDS=5;
+const JOIN_CONFIRM_MAX_SECONDS=600;
+function readJoinConfirmSeconds(input){
+  const parsed=Number.parseInt(input?.value,10);
+  const value=Number.isFinite(parsed)?parsed:JOIN_CONFIRM_DEFAULT_SECONDS;
+  const safe=Math.min(JOIN_CONFIRM_MAX_SECONDS,Math.max(JOIN_CONFIRM_MIN_SECONDS,value));
+  if(input)input.value=String(safe);
+  return safe;
+}
+function saveJoinConfirmSeconds(input,key){
+  const value=readJoinConfirmSeconds(input);
+  chrome.storage.sync.set({[key]:value});
+}
 function setGroupRunning(v){
   isGroupJoining=v;
   groupStartBtn.textContent = v ? t("p.busyJoin") : t("p.gjIdle");
@@ -1004,10 +1180,11 @@ groupStartBtn.onclick = async ()=>{
     targetJoin: parseInt(groupTarget.value)||10,
     minDelay: parseInt(groupMinDelay.value)||5,
     maxDelay: parseInt(groupMaxDelay.value)||15,
+    confirmWaitSeconds: readJoinConfirmSeconds(groupConfirmWait),
     answersText,aiJoinEnabled:groupAiAnswersEnabled.checked,aiJoinPrompt:groupAiAnswersPrompt.value.trim(),aiConfig:aiSaved
   };
   if(cfg.minDelay > cfg.maxDelay){ groupStatus.textContent=t("p.gjBadDelay2"); return; }
-  chrome.storage.sync.set({ groupKeyword:keyword, groupMinMembers:cfg.minMembers, groupMinPosts:cfg.minPostsPerDay, groupTarget:cfg.targetJoin, groupMinDelay:cfg.minDelay, groupMaxDelay:cfg.maxDelay, groupAnswers: answersText,groupAiAnswersEnabled:cfg.aiJoinEnabled,groupAiAnswersPrompt:cfg.aiJoinPrompt });
+  chrome.storage.sync.set({ groupKeyword:keyword, groupMinMembers:cfg.minMembers, groupMinPosts:cfg.minPostsPerDay, groupTarget:cfg.targetJoin, groupMinDelay:cfg.minDelay, groupMaxDelay:cfg.maxDelay, groupConfirmWait:cfg.confirmWaitSeconds, groupAnswers: answersText,groupAiAnswersEnabled:cfg.aiJoinEnabled,groupAiAnswersPrompt:cfg.aiJoinPrompt });
   // Lưu phiên trước điều hướng để tab tự resume đúng từ khóa sau mọi reload.
   setGroupRunning(true);
   const searchUrl="https://www.facebook.com/search/groups/?q="+encodeURIComponent(keyword);
@@ -1024,7 +1201,7 @@ groupStartBtn.onclick = async ()=>{
       }catch{return url.includes("/search/groups/?q="+encodeURIComponent(keyword));}
     },
     async owner=>{
-      await chrome.storage.local.set({isGroupJoining:true,groupJoined:0,groupFound:0,groupJoinRunConfig:{...cfg,ownerTabId:owner.id},groupStatus:t("p.gjOpeningKw",{kw:keyword})});
+      await chrome.storage.local.set({isGroupJoining:true,groupJoined:0,groupFound:0,groupAiUsage:t("gq.aiWaiting"),groupJoinRunConfig:{...cfg,ownerTabId:owner.id},groupStatus:t("p.gjOpeningKw",{kw:keyword})});
     }
   );if(!tab){setGroupRunning(false);await chrome.storage.local.set({isGroupJoining:false});await chrome.storage.local.remove(["groupJoinRunConfig"]);return;}
   chrome.tabs.sendMessage(tab.id, { action:"startGroupJoin", ...cfg,ownerTabId:tab.id }, async res=>{
@@ -1059,24 +1236,27 @@ groupResetBtn.onclick = async ()=>{
   });
 };
 // load group config
-chrome.storage.sync.get(["groupKeyword","groupMinMembers","groupMinPosts","groupTarget","groupMinDelay","groupMaxDelay","groupAnswers","groupAiAnswersEnabled","groupAiAnswersPrompt"], res=>{
+chrome.storage.sync.get(["groupKeyword","groupMinMembers","groupMinPosts","groupTarget","groupMinDelay","groupMaxDelay","groupConfirmWait","groupAnswers","groupAiAnswersEnabled","groupAiAnswersPrompt"], res=>{
   if(res.groupKeyword) groupKeyword.value=res.groupKeyword;
   if(res.groupMinMembers!==undefined) groupMinMembers.value=res.groupMinMembers;
   if(res.groupMinPosts!==undefined) groupMinPosts.value=res.groupMinPosts;
   if(res.groupTarget) groupTarget.value=res.groupTarget;
   if(res.groupMinDelay) groupMinDelay.value=res.groupMinDelay;
   if(res.groupMaxDelay) groupMaxDelay.value=res.groupMaxDelay;
+  if(res.groupConfirmWait!==undefined) groupConfirmWait.value=readJoinConfirmSeconds({value:res.groupConfirmWait});
   if(res.groupAnswers) groupAnswers.value=res.groupAnswers;
   if(res.groupAiAnswersEnabled!==undefined)groupAiAnswersEnabled.checked=res.groupAiAnswersEnabled;
   if(res.groupAiAnswersPrompt!==undefined)groupAiAnswersPrompt.value=res.groupAiAnswersPrompt;
   groupCount.textContent = `0 / ${parseInt(groupTarget.value)||10}`;
 });
-chrome.storage.local.get(["groupStatus","groupJoined","groupFound","isGroupJoining"], res=>{
+chrome.storage.local.get(["groupStatus","groupJoined","groupFound","groupAiUsage","isGroupJoining"], res=>{
   if(res.groupStatus) groupStatus.textContent=res.groupStatus;
+  if(res.groupAiUsage) groupAiUsage.textContent=res.groupAiUsage;
   if(res.groupJoined!==undefined) groupCount.textContent=`${res.groupJoined} / ${parseInt(groupTarget.value)||10}`;
   if(res.isGroupJoining) setGroupRunning(true);
 });
 groupTarget.addEventListener("change", ()=>{ groupCount.textContent=`${0} / ${parseInt(groupTarget.value)||10}`; });
+groupConfirmWait.addEventListener("change",()=>saveJoinConfirmSeconds(groupConfirmWait,"groupConfirmWait"));
 
 // DISCOVER JOIN handlers
 let isDiscoverJoining=false;
@@ -1094,12 +1274,13 @@ discoverStartBtn.onclick = async ()=>{
     target: parseInt(discoverTarget.value)||10,
     minDelay: parseInt(discoverMinDelay.value)||5,
     maxDelay: parseInt(discoverMaxDelay.value)||15,
+    confirmWaitSeconds: readJoinConfirmSeconds(discoverConfirmWait),
     answersText: discoverAnswers.value.trim(),aiJoinEnabled:groupAiAnswersEnabled.checked,aiJoinPrompt:groupAiAnswersPrompt.value.trim(),aiConfig:aiSaved
   };
   if(cfg.minDelay > cfg.maxDelay){ discoverStatus.textContent=t("p.delayBad"); return; }
-  chrome.storage.sync.set({ discoverTarget:cfg.target, discoverMinDelay:cfg.minDelay, discoverMaxDelay:cfg.maxDelay, discoverAnswers: cfg.answersText });
+  chrome.storage.sync.set({ discoverTarget:cfg.target, discoverMinDelay:cfg.minDelay, discoverMaxDelay:cfg.maxDelay, discoverConfirmWait:cfg.confirmWaitSeconds, discoverAnswers: cfg.answersText });
   setDiscoverRunning(true);
-  const discoverRunConfig={target:cfg.target,minDelay:cfg.minDelay,maxDelay:cfg.maxDelay,answersText:cfg.answersText,aiJoinEnabled:cfg.aiJoinEnabled,aiJoinPrompt:cfg.aiJoinPrompt,aiConfig:cfg.aiConfig};
+  const discoverRunConfig={target:cfg.target,minDelay:cfg.minDelay,maxDelay:cfg.maxDelay,confirmWaitSeconds:cfg.confirmWaitSeconds,answersText:cfg.answersText,aiJoinEnabled:cfg.aiJoinEnabled,aiJoinPrompt:cfg.aiJoinPrompt,aiConfig:cfg.aiConfig};
   let tab = await ensureTaskTab(
     "https://www.facebook.com/groups/discover",
     discoverStatus,
@@ -1142,10 +1323,11 @@ discoverResetBtn.onclick = async ()=>{
     setDiscoverRunning(false);
   });
 };
-chrome.storage.sync.get(["discoverTarget","discoverMinDelay","discoverMaxDelay","discoverAnswers"], res=>{
+chrome.storage.sync.get(["discoverTarget","discoverMinDelay","discoverMaxDelay","discoverConfirmWait","discoverAnswers"], res=>{
   if(res.discoverTarget) discoverTarget.value=res.discoverTarget;
   if(res.discoverMinDelay) discoverMinDelay.value=res.discoverMinDelay;
   if(res.discoverMaxDelay) discoverMaxDelay.value=res.discoverMaxDelay;
+  if(res.discoverConfirmWait!==undefined) discoverConfirmWait.value=readJoinConfirmSeconds({value:res.discoverConfirmWait});
   if(res.discoverAnswers) discoverAnswers.value=res.discoverAnswers;
   discoverCount.textContent=`0 / ${parseInt(discoverTarget.value)||10}`;
 });
@@ -1160,6 +1342,7 @@ chrome.storage.onChanged.addListener(changes=>{
   if(changes.isDiscoverJoining!==undefined) setDiscoverRunning(changes.isDiscoverJoining.newValue);
 });
 discoverTarget.addEventListener("change", ()=>{ discoverCount.textContent=`${0} / ${parseInt(discoverTarget.value)||10}`; });
+discoverConfirmWait.addEventListener("change",()=>saveJoinConfirmSeconds(discoverConfirmWait,"discoverConfirmWait"));
 
 // FEED & AI
 const feedReaction = $("feedReaction");
@@ -1236,22 +1419,60 @@ feedTarget.addEventListener("change", ()=>{ feedCountEl.textContent=`${0} / ${pa
 const joinedGroupList=$("joinedGroupList"), loadJoinedGroupsBtn=$("loadJoinedGroupsBtn"), selectAllGroupsBtn=$("selectAllGroupsBtn");
 const groupInteractKeyword=$("groupInteractKeyword"),selectKeywordGroupsBtn=$("selectKeywordGroupsBtn");
 const groupInteractReaction=$("groupInteractReaction"), groupInteractTarget=$("groupInteractTarget");
-const groupInteractGroupLimit=$("groupInteractGroupLimit"), groupInteractAiComment=$("groupInteractAiComment");
+const groupInteractGroupLimit=$("groupInteractGroupLimit");
 const groupInteractMinDelay=$("groupInteractMinDelay"), groupInteractMaxDelay=$("groupInteractMaxDelay");
-const groupInteractStartBtn=$("groupInteractStartBtn"), groupInteractStopBtn=$("groupInteractStopBtn");
+const groupInteractStartBtn=$("groupInteractStartBtn"), groupInteractStopBtn=$("groupInteractStopBtn"), groupInteractResetBtn=$("groupInteractResetBtn");
+const groupCommentStartBtn=$("groupCommentStartBtn"), groupCommentStopBtn=$("groupCommentStopBtn"), groupCommentResetBtn=$("groupCommentResetBtn");
 const groupInteractStatus=$("groupInteractStatus"), groupInteractCount=$("groupInteractCount");
-let isGroupInteractRunning=false;
-function setGroupInteractRunning(v){isGroupInteractRunning=v;groupInteractStartBtn.textContent=v?t("p.giBusy"):t("gi.start");groupInteractStartBtn.classList.toggle("running",v);}
+const groupCommentStatus=$("groupCommentStatus"), groupCommentCount=$("groupCommentCount");
+let isGroupInteractRunning=false,isGroupCommentRunning=false;
+function setGroupInteractRunning(v){isGroupInteractRunning=!!v;groupInteractStartBtn.textContent=v?t("p.giBusy"):t("gi.reactionStart");groupInteractStartBtn.classList.toggle("running",!!v);}
+function setGroupCommentRunning(v){isGroupCommentRunning=!!v;groupCommentStartBtn.textContent=v?t("p.giCommentBusy"):t("gi.commentStart");groupCommentStartBtn.classList.toggle("running",!!v);}
 let joinedGroups=[];
+let joinedGroupSelectionIds=new Set();
+const localizeJoinedGroupStatus=value=>{
+  const s=String(value||"");
+  return /^gi2\./.test(s)?t(s):s;
+};
+function persistJoinedGroupSelection(){
+  chrome.storage.local.set({groupInteractSelectedIds:[...joinedGroupSelectionIds]}).catch(()=>{});
+}
+function syncJoinedGroupSelection(){
+  joinedGroupList.querySelectorAll('.joined-group-check').forEach(box=>{
+    const id=String(box.value);
+    if(box.checked)joinedGroupSelectionIds.add(id);else joinedGroupSelectionIds.delete(id);
+  });
+  persistJoinedGroupSelection();
+  return [...joinedGroupSelectionIds];
+}
+function bindJoinedGroupSelectionHandlers(){
+  joinedGroupList.querySelectorAll('.joined-group-check').forEach(box=>{
+    const syncOne=()=>{
+      const id=String(box.value);
+      if(box.checked)joinedGroupSelectionIds.add(id);else joinedGroupSelectionIds.delete(id);
+      persistJoinedGroupSelection();
+    };
+    box.addEventListener('change',syncOne);
+    box.addEventListener('click',()=>setTimeout(syncOne,0));
+  });
+}
+function getSelectedJoinedGroups(){
+  syncJoinedGroupSelection();
+  const ids=new Set(joinedGroupSelectionIds);
+  return joinedGroups.filter(g=>ids.has(String(g.id)));
+}
 function renderJoinedGroups(groups,selectedIds=[]){
   joinedGroups=groups||[];
   if(!joinedGroups.length){ joinedGroupList.innerHTML='<div class="hint" style="padding:6px">'+t("p.giNotFound")+'</div>'; return; }
-  const selected=new Set(selectedIds);
+  joinedGroupSelectionIds=new Set((selectedIds||[]).map(String));
+  const selected=joinedGroupSelectionIds;
   const escapeHtml=value=>String(value||"").replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));
   joinedGroupList.innerHTML=joinedGroups.map(g=>{
     const name=String(g?.name||""),id=String(g?.id||""),icon=String(g?.icon||"icon128.png");
-    return `<label data-group-name="${escapeHtml(name.toLowerCase())}" style="display:flex;align-items:center;gap:7px;padding:5px;margin:0;border-bottom:1px solid #eee;cursor:pointer"><input class="joined-group-check" type="checkbox" value="${escapeHtml(id)}" ${selected.has(id)?"checked":""} style="width:auto"><img src="${escapeHtml(icon)}" style="width:30px;height:30px;border-radius:50%;object-fit:cover"><span style="font-size:12px;line-height:1.2">${escapeHtml(name)}</span></label>`;
+    return `<label data-group-id="${escapeHtml(id)}" data-group-name="${escapeHtml(name.toLowerCase())}" style="display:flex;align-items:center;gap:7px;padding:5px;margin:0;border-bottom:1px solid #eee;cursor:pointer"><input class="joined-group-check" type="checkbox" value="${escapeHtml(id)}" ${selected.has(id)?"checked":""} style="width:auto"><img src="${escapeHtml(icon)}" style="width:30px;height:30px;border-radius:50%;object-fit:cover"><span style="font-size:12px;line-height:1.2">${escapeHtml(name)}</span></label>`;
   }).join("");
+  bindJoinedGroupSelectionHandlers();
+  persistJoinedGroupSelection();
 }
 loadJoinedGroupsBtn.onclick=async()=>{
   groupInteractStatus.textContent=t("p.giLoadGroups");
@@ -1272,6 +1493,8 @@ loadJoinedGroupsBtn.onclick=async()=>{
 selectAllGroupsBtn.onclick=()=>{
   const boxes=[...joinedGroupList.querySelectorAll('.joined-group-check')];
   const shouldCheck=boxes.some(b=>!b.checked); boxes.forEach(b=>b.checked=shouldCheck);
+  joinedGroupSelectionIds=new Set(shouldCheck?boxes.map(b=>String(b.value)):[]);
+  persistJoinedGroupSelection();
   selectAllGroupsBtn.textContent=shouldCheck?t("p.selNone"):t("c.selectAll");
 };
 selectKeywordGroupsBtn.onclick=()=>{
@@ -1284,54 +1507,99 @@ selectKeywordGroupsBtn.onclick=()=>{
     const box=row.querySelector('.joined-group-check'); box.checked=ok;
     if(ok)matched++;
   });
+  joinedGroupSelectionIds=new Set([...joinedGroupList.querySelectorAll('.joined-group-check')].filter(b=>b.checked).map(b=>String(b.value)));
+  persistJoinedGroupSelection();
   groupInteractStatus.textContent=t("p.giMatched",{n:matched,keys:keys.join(", ")});
 };
 groupInteractKeyword.addEventListener("input",()=>{if(!groupInteractKeyword.value.trim())joinedGroupList.querySelectorAll('label[data-group-name]').forEach(row=>row.style.display="flex");});
-groupInteractStartBtn.onclick=async()=>{
-  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive"]);if(Object.values(shareRun).some(Boolean)){groupInteractStatus.textContent=(shareRun.pageGroupJoinActive||shareRun.pageGroupPostActive||shareRun.pageWatchActive||shareRun.pageCommentActive)?t("pg.busyOther"):t("p.shBusyInteract");return;}
-  const ids=[...joinedGroupList.querySelectorAll('.joined-group-check:checked')].map(b=>b.value);
-  const selectedGroups=joinedGroups.filter(g=>ids.includes(g.id));
+async function startJoinedGroupMode(mode){
+  const isComment=mode==="comment",statusEl=isComment?groupCommentStatus:groupInteractStatus;
+  const activeKey=isComment?"groupCommentActive":"groupInteractActive";
+  const runIdKey=isComment?"groupCommentRunId":"groupInteractRunId";
+  const configKey=isComment?"groupCommentConfig":"groupInteractConfig";
+  const indexKey=isComment?"groupCommentIndex":"groupInteractIndex";
+  const doneKey=isComment?"groupCommentDone":"groupInteractDone";
+  const totalKey=isComment?"groupCommentTotal":"groupInteractTotal";
+  const statusKey=isComment?"groupCommentStatus":"groupInteractStatus";
+  const shareRun=await chrome.storage.local.get(["groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","groupInteractActive","groupCommentActive"]);
+  if(Object.values(shareRun).some(Boolean)){statusEl.textContent=(shareRun.pageGroupJoinActive||shareRun.pageGroupPostActive||shareRun.pageWatchActive||shareRun.pageCommentActive)?t("pg.busyOther"):t("p.shBusyInteract");return;}
+  const selectedGroups=getSelectedJoinedGroups();
   const requestedGroups=Math.max(1,parseInt(groupInteractGroupLimit.value)||1);
   const groups=selectedGroups.slice(0,Math.min(requestedGroups,selectedGroups.length));
-  const runId=`group-interact-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-  const cfg={groups,perGroup:parseInt(groupInteractTarget.value)||5,minDelay:parseInt(groupInteractMinDelay.value)||5,maxDelay:parseInt(groupInteractMaxDelay.value)||12,reaction:groupInteractReaction.value,targetGroups:requestedGroups,aiComment:!!groupInteractAiComment.checked,runId};
-  if(!selectedGroups.length){groupInteractStatus.textContent=t("p.giNeedGroups");return;}
-  if(requestedGroups>selectedGroups.length){groupInteractStatus.textContent=t("p.giOnlyReal",{n:selectedGroups.length});}
-  if(cfg.minDelay>cfg.maxDelay){groupInteractStatus.textContent=t("p.gjBadDelay");return;}
+  const runId=`group-${mode}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+  const cfg={groups,perGroup:parseInt(groupInteractTarget.value)||5,minDelay:parseInt(groupInteractMinDelay.value)||5,maxDelay:parseInt(groupInteractMaxDelay.value)||12,reaction:groupInteractReaction.value,targetGroups:requestedGroups,runId,mode};
+  if(!selectedGroups.length){statusEl.textContent=t("p.giNeedGroups");return;}
+  if(requestedGroups>selectedGroups.length){statusEl.textContent=t("p.giOnlyReal",{n:selectedGroups.length});}
+  if(cfg.minDelay>cfg.maxDelay){statusEl.textContent=t("p.gjBadDelay");return;}
   groupInteractGroupLimit.value=requestedGroups;
-  chrome.storage.sync.set({groupInteractTargetGroups:requestedGroups,groupInteractAiComment:cfg.aiComment,groupInteractPerGroup:cfg.perGroup,groupInteractMinDelay:cfg.minDelay,groupInteractMaxDelay:cfg.maxDelay,groupInteractReaction:cfg.reaction});
-  setGroupInteractRunning(true);
+  chrome.storage.sync.set({groupInteractTargetGroups:requestedGroups,groupInteractPerGroup:cfg.perGroup,groupInteractMinDelay:cfg.minDelay,groupInteractMaxDelay:cfg.maxDelay,groupInteractReaction:cfg.reaction});
+  if(isComment)setGroupCommentRunning(true);else setGroupInteractRunning(true);
   const tab=await ensureTaskTab(
     groups[0].url,
-    groupInteractStatus,
+    statusEl,
     t("p.openFirstGroup",{name:groups[0].name}),
-    url=>url.includes("facebook.com/groups/"),
+    isJoinedGroupHomeUrl,
     async owner=>{
-      await chrome.storage.local.set({groupInteractActive:true,groupInteractRunId:runId,groupInteractConfig:{...cfg,ownerTabId:owner.id},groupInteractIndex:0,groupInteractDone:0,groupInteractAiDone:0,groupInteractTotal:groups.length*cfg.perGroup,groupInteractCurrentGroupIndex:0,groupInteractCurrentGroupDone:0,groupInteractCurrentGroupAiDone:0,groupInteractReactedKeys:{},groupInteractReactionGuard:{},groupInteractCommentGuard:{},groupInteractStatus:t("gi2.starting")});
+      const base={ [activeKey]:true,[runIdKey]:runId,[configKey]:{...cfg,ownerTabId:owner.id},[indexKey]:0,[doneKey]:0,[totalKey]:groups.length*cfg.perGroup,[statusKey]:t(isComment?"gi2.commentStarting":"gi2.starting") };
+      if(isComment)Object.assign(base,{groupCommentCurrentGroupIndex:0,groupCommentCurrentGroupDone:0,groupCommentSubmissionGuard:{},groupCommentProcessedKeys:[],groupCommentRetryCounts:{},groupCommentSkipped:{}});
+      else Object.assign(base,{groupInteractCurrentGroupIndex:0,groupInteractCurrentGroupDone:0,groupInteractReactedKeys:{},groupInteractReactionGuard:{}});
+      await chrome.storage.local.set(base);
     }
-  );if(!tab){setGroupInteractRunning(false);await chrome.storage.local.set({groupInteractActive:false});return;}
-  chrome.tabs.sendMessage(tab.id,{action:"startGroupInteract",...cfg,ownerTabId:tab.id},async res=>{
+  );if(!tab){if(isComment)setGroupCommentRunning(false);else setGroupInteractRunning(false);await chrome.storage.local.set({[activeKey]:false});return;}
+  const action=isComment?"startGroupComment":"startGroupInteract",stopState=isComment?"groupCommentActive":"groupInteractActive";
+  chrome.tabs.sendMessage(tab.id,{action,...cfg,ownerTabId:tab.id},async res=>{
     if(chrome.runtime.lastError){
-      const retry=await autoReloadAndRetry(tab.id,{action:"startGroupInteract",...cfg,ownerTabId:tab.id},groupInteractStatus);
-      if(retry.ok&&retry.res?.ok){groupInteractStatus.textContent=t("p.giRunningCount",{n:groups.length});return;}
-      if(await runStillActive("groupInteractActive")){groupInteractStatus.textContent=t("p.giRunningCount",{n:groups.length});return;}
-      setGroupInteractRunning(false);return;
+      const retry=await autoReloadAndRetry(tab.id,{action,...cfg,ownerTabId:tab.id},statusEl);
+      if(retry.ok&&retry.res?.ok){statusEl.textContent=t(isComment?"p.giCommentRunningCount":"p.giRunningCount",{n:groups.length});return;}
+      if(await runStillActive(stopState)){statusEl.textContent=t(isComment?"p.giCommentRunningCount":"p.giRunningCount",{n:groups.length});return;}
+      if(isComment)setGroupCommentRunning(false);else setGroupInteractRunning(false);return;
     }
-    if(res&&res.ok){groupInteractStatus.textContent=t("p.giRunningCount",{n:groups.length});return;}
-    if(await runStillActive("groupInteractActive")){groupInteractStatus.textContent=t("p.giRunningCount",{n:groups.length});return;}
-    await chrome.storage.local.set({groupInteractActive:false});
-    setGroupInteractRunning(false);groupInteractStatus.textContent=res?.error||t("p.giStartFail");return;
+    if(res&&res.ok){statusEl.textContent=t(isComment?"p.giCommentRunningCount":"p.giRunningCount",{n:groups.length});return;}
+    if(await runStillActive(stopState)){statusEl.textContent=t(isComment?"p.giCommentRunningCount":"p.giRunningCount",{n:groups.length});return;}
+    await chrome.storage.local.set({[activeKey]:false});
+    if(isComment)setGroupCommentRunning(false);else setGroupInteractRunning(false);statusEl.textContent=res?.error||t("p.giStartFail");return;
   });
-};
-groupInteractStopBtn.onclick=async()=>{setGroupInteractRunning(false);await chrome.storage.local.set({groupInteractActive:false,groupInteractStatus:t("p.stopped")});broadcastToFacebookTabs({action:"stopGroupInteract"});const tab=await getActiveTab();if(tab)chrome.tabs.sendMessage(tab.id,{action:"stopGroupInteract"});};
-chrome.storage.local.get(["joinedGroups","groupInteractStatus","groupInteractDone","groupInteractTotal","groupInteractActive"],r=>{if(r.joinedGroups)renderJoinedGroups(r.joinedGroups);if(r.groupInteractStatus)groupInteractStatus.textContent=r.groupInteractStatus;if(r.groupInteractDone!==undefined)groupInteractCount.textContent=`${r.groupInteractDone} / ${r.groupInteractTotal||0}`;if(r.groupInteractActive)setGroupInteractRunning(true);});
-chrome.storage.sync.get(["groupInteractTargetGroups","groupInteractAiComment","groupInteractPerGroup","groupInteractMinDelay","groupInteractMaxDelay","groupInteractReaction"],r=>{if(r.groupInteractTargetGroups)groupInteractGroupLimit.value=r.groupInteractTargetGroups;if(typeof r.groupInteractAiComment==="boolean")groupInteractAiComment.checked=r.groupInteractAiComment;if(r.groupInteractPerGroup)groupInteractTarget.value=r.groupInteractPerGroup;if(r.groupInteractMinDelay)groupInteractMinDelay.value=r.groupInteractMinDelay;if(r.groupInteractMaxDelay)groupInteractMaxDelay.value=r.groupInteractMaxDelay;if(r.groupInteractReaction)groupInteractReaction.value=r.groupInteractReaction;});
-[groupInteractGroupLimit,groupInteractAiComment].forEach(el=>el.addEventListener("change",()=>{
+}
+groupInteractStartBtn.onclick=()=>startJoinedGroupMode("reaction");
+groupCommentStartBtn.onclick=()=>startJoinedGroupMode("comment");
+async function stopJoinedGroupMode(mode){
+  const isComment=mode==="comment",activeKey=isComment?"groupCommentActive":"groupInteractActive",statusKey=isComment?"groupCommentStatus":"groupInteractStatus",action=isComment?"stopGroupComment":"stopGroupInteract";
+  if(isComment)setGroupCommentRunning(false);else setGroupInteractRunning(false);
+  await chrome.storage.local.set({[activeKey]:false,[statusKey]:t("p.stopped")});
+  broadcastToFacebookTabs({action});
+  const tab=await getActiveTab();if(tab)chrome.tabs.sendMessage(tab.id,{action},()=>{});
+}
+groupInteractStopBtn.onclick=()=>stopJoinedGroupMode("reaction");
+groupCommentStopBtn.onclick=()=>stopJoinedGroupMode("comment");
+async function resetJoinedGroupMode(mode){
+  const isComment=mode==="comment";
+  const countEl=isComment?groupCommentCount:groupInteractCount;
+  const statusEl=isComment?groupCommentStatus:groupInteractStatus;
+  if(isComment)setGroupCommentRunning(false);else setGroupInteractRunning(false);
+  // Ghi cờ dừng + zero bộ đếm trực tiếp vào storage để Reset có tác dụng
+  // ngay cả khi tab Facebook không còn reachable (mất message giữa
+  // điều hướng). Lịch sử chống trùng được giữ lại như Reset Comment AI
+  // Bản tin để phiên mới không thả cảm xúc/comment lặp vào cùng bài.
+  const patch=isComment
+    ?{groupCommentActive:false,groupCommentRunId:"",groupCommentIndex:0,groupCommentDone:0,groupCommentTotal:0,groupCommentCurrentGroupIndex:0,groupCommentCurrentGroupDone:0,groupCommentSubmissionGuard:{},groupCommentProcessedKeys:[],groupCommentRetryCounts:{},groupCommentSkipped:{},groupCommentStatus:t("gi.commentResetDone")}
+    :{groupInteractActive:false,groupInteractRunId:"",groupInteractIndex:0,groupInteractDone:0,groupInteractAiDone:0,groupInteractTotal:0,groupInteractCurrentGroupIndex:0,groupInteractCurrentGroupDone:0,groupInteractCurrentGroupAiDone:0,groupInteractReactionGuard:{},groupInteractCommentGuard:{},groupInteractAiSkipped:{},groupInteractStatus:t("gi.reactionResetDone")};
+  await chrome.storage.local.set(patch);
+  const action=isComment?"resetGroupComment":"resetGroupInteract";
+  broadcastToFacebookTabs({action});
+  const tab=await getActiveTab();if(tab)chrome.tabs.sendMessage(tab.id,{action},()=>{});
+  countEl.textContent=isComment?"Comment AI: 0 / 0":"Like/Random: 0 / 0";
+  statusEl.textContent=t(isComment?"gi.commentResetDone":"gi.reactionResetDone");
+}
+groupInteractResetBtn.onclick=()=>resetJoinedGroupMode("reaction");
+groupCommentResetBtn.onclick=()=>resetJoinedGroupMode("comment");
+chrome.storage.local.get(["joinedGroups","groupInteractSelectedIds","groupInteractStatus","groupInteractDone","groupInteractTotal","groupInteractActive","groupCommentStatus","groupCommentDone","groupCommentTotal","groupCommentActive"],r=>{if(r.joinedGroups)renderJoinedGroups(r.joinedGroups,r.groupInteractSelectedIds||[]);if(r.groupInteractStatus)groupInteractStatus.textContent=localizeJoinedGroupStatus(r.groupInteractStatus);if(r.groupInteractDone!==undefined)groupInteractCount.textContent=`Like/Random: ${r.groupInteractDone} / ${r.groupInteractTotal||0}`;if(r.groupCommentStatus)groupCommentStatus.textContent=localizeJoinedGroupStatus(r.groupCommentStatus);if(r.groupCommentDone!==undefined)groupCommentCount.textContent=`Comment AI: ${r.groupCommentDone} / ${r.groupCommentTotal||0}`;if(r.groupInteractActive)setGroupInteractRunning(true);if(r.groupCommentActive)setGroupCommentRunning(true);});
+chrome.storage.sync.get(["groupInteractTargetGroups","groupInteractPerGroup","groupInteractMinDelay","groupInteractMaxDelay","groupInteractReaction"],r=>{if(r.groupInteractTargetGroups)groupInteractGroupLimit.value=r.groupInteractTargetGroups;if(r.groupInteractPerGroup)groupInteractTarget.value=r.groupInteractPerGroup;if(r.groupInteractMinDelay)groupInteractMinDelay.value=r.groupInteractMinDelay;if(r.groupInteractMaxDelay)groupInteractMaxDelay.value=r.groupInteractMaxDelay;if(r.groupInteractReaction)groupInteractReaction.value=r.groupInteractReaction;});
+[groupInteractGroupLimit,groupInteractTarget,groupInteractMinDelay,groupInteractMaxDelay,groupInteractReaction].forEach(el=>el.addEventListener("change",()=>{
   const target=Math.max(1,parseInt(groupInteractGroupLimit.value)||1);
   groupInteractGroupLimit.value=target;
-  chrome.storage.sync.set({groupInteractTargetGroups:target,groupInteractAiComment:!!groupInteractAiComment.checked});
+  chrome.storage.sync.set({groupInteractTargetGroups:target,groupInteractPerGroup:Math.max(1,parseInt(groupInteractTarget.value)||5),groupInteractMinDelay:Math.max(1,parseInt(groupInteractMinDelay.value)||5),groupInteractMaxDelay:Math.max(1,parseInt(groupInteractMaxDelay.value)||12),groupInteractReaction:groupInteractReaction.value});
 }));
-chrome.storage.onChanged.addListener(c=>{if(c.groupInteractStatus)groupInteractStatus.textContent=c.groupInteractStatus.newValue;if(c.groupInteractActive!==undefined)setGroupInteractRunning(c.groupInteractActive.newValue);if(c.groupInteractDone||c.groupInteractTotal)chrome.storage.local.get(["groupInteractDone","groupInteractTotal"],r=>groupInteractCount.textContent=`${r.groupInteractDone||0} / ${r.groupInteractTotal||0}`);});
+chrome.storage.onChanged.addListener(c=>{if(c.groupInteractStatus)groupInteractStatus.textContent=localizeJoinedGroupStatus(c.groupInteractStatus.newValue);if(c.groupInteractActive!==undefined)setGroupInteractRunning(c.groupInteractActive.newValue);if(c.groupInteractDone||c.groupInteractTotal)chrome.storage.local.get(["groupInteractDone","groupInteractTotal"],r=>groupInteractCount.textContent=`Like/Random: ${r.groupInteractDone||0} / ${r.groupInteractTotal||0}`);if(c.groupCommentStatus)groupCommentStatus.textContent=localizeJoinedGroupStatus(c.groupCommentStatus.newValue);if(c.groupCommentActive!==undefined)setGroupCommentRunning(c.groupCommentActive.newValue);if(c.groupCommentDone||c.groupCommentTotal)chrome.storage.local.get(["groupCommentDone","groupCommentTotal"],r=>groupCommentCount.textContent=`Comment AI: ${r.groupCommentDone||0} / ${r.groupCommentTotal||0}`);});
 
 // DANG BAI AI LEN NHOM
 const groupPostList=$("groupPostList"),loadPostGroupsBtn=$("loadPostGroupsBtn"),selectAllPostGroupsBtn=$("selectAllPostGroupsBtn");
@@ -1387,7 +1655,7 @@ function readGroupPostBackgroundConfig(){
     mode,
     fixedColor,
     colors:colors.length?colors:Object.keys(GROUP_POST_PREVIEW_COLORS),
-    maxChars:Math.min(140,Math.max(40,parseInt(groupPostMaxChars.value)||100)),
+    maxChars:Math.min(130,Math.max(40,parseInt(groupPostMaxChars.value)||100)),
     fallback:"skip"
   };
 }
@@ -1472,7 +1740,7 @@ groupPostStartBtn.onclick=async()=>{
 groupPostStopBtn.onclick=async()=>{setGroupPostRunning(false);await chrome.storage.local.set({groupPostActive:false,groupPostNextAt:0,groupPostStage:"",groupPostStatus:t("p.gpStopped")});broadcastToFacebookTabs({action:"stopGroupPost"});const tab=await getActiveTab();if(tab)chrome.tabs.sendMessage(tab.id,{action:"stopGroupPost"});};
 groupPostResetBtn.onclick=async()=>{setGroupPostRunning(false);await chrome.storage.local.set({groupPostActive:false,groupPostRunId:"",groupPostIndex:0,groupPostDone:0,groupPostSkipped:0,groupPostTotal:0,groupPostNextAt:0,groupPostLastColor:"",groupPostRetryCount:0,groupPostPendingContent:"",groupPostPendingIndex:-1,groupPostStage:"",groupPostSubmitRunId:"",groupPostSubmitIndex:-1,groupPostSubmitDispatchedAt:0,groupPostStatus:t("gp.resetDone")});broadcastToFacebookTabs({action:"stopGroupPost"});const tab=await getActiveTab();if(tab)chrome.tabs.sendMessage(tab.id,{action:"stopGroupPost"});};
 chrome.storage.local.get(["joinedGroups","groupPostStatus","groupPostDone","groupPostSkipped","groupPostTotal","groupPostActive"],r=>{if(r.joinedGroups)renderPostGroups(r.joinedGroups);if(r.groupPostStatus)groupPostStatus.textContent=r.groupPostStatus;groupPostCount.textContent=t("p.gpCount",{d:r.groupPostDone||0,t:r.groupPostTotal||0,s:r.groupPostSkipped||0});if(r.groupPostActive)setGroupPostRunning(true);});
-chrome.storage.sync.get(["groupPostPrompt","groupPostTargetGroups","groupPostInterDelay","groupPostBackgroundEnabled","groupPostBackgroundMode","groupPostFixedColor","groupPostBackgroundColors","groupPostMaxChars"],async r=>{if(r.groupPostPrompt!==undefined)groupPostPrompt.value=r.groupPostPrompt;if(r.groupPostTargetGroups!==undefined)groupPostTargetGroups.value=r.groupPostTargetGroups;if(r.groupPostInterDelay!==undefined)groupPostInterDelay.value=Math.min(3600,Math.max(5,r.groupPostInterDelay));groupPostBackgroundEnabled.checked=r.groupPostBackgroundEnabled!==false;if(r.groupPostBackgroundMode)groupPostBackgroundMode.value=r.groupPostBackgroundMode==="fixed"?"fixed":"random";if(r.groupPostFixedColor&&GROUP_POST_PREVIEW_COLORS[r.groupPostFixedColor])groupPostFixedColor.value=r.groupPostFixedColor;if(Array.isArray(r.groupPostBackgroundColors)){document.querySelectorAll('.group-post-bg-color').forEach(el=>el.checked=r.groupPostBackgroundColors.includes(el.value));}if(r.groupPostMaxChars)groupPostMaxChars.value=r.groupPostMaxChars;toggleGroupPostBackgroundOptions();const c=await getUnifiedAiConfig();groupPostAiProvider.value=c.provider;groupPostAiKey.value=c.key;renderGroupPostModels(c.provider,c.model==="gemini-3.6-flash"?"gemini-flash-lite-latest":c.model);groupPostAiUrl.value=c.url;});
+chrome.storage.sync.get(["groupPostPrompt","groupPostTargetGroups","groupPostInterDelay","groupPostBackgroundEnabled","groupPostBackgroundMode","groupPostFixedColor","groupPostBackgroundColors","groupPostMaxChars"],async r=>{if(r.groupPostPrompt!==undefined)groupPostPrompt.value=r.groupPostPrompt;if(r.groupPostTargetGroups!==undefined)groupPostTargetGroups.value=r.groupPostTargetGroups;if(r.groupPostInterDelay!==undefined)groupPostInterDelay.value=Math.min(3600,Math.max(5,r.groupPostInterDelay));groupPostBackgroundEnabled.checked=r.groupPostBackgroundEnabled!==false;if(r.groupPostBackgroundMode)groupPostBackgroundMode.value=r.groupPostBackgroundMode==="fixed"?"fixed":"random";if(r.groupPostFixedColor&&GROUP_POST_PREVIEW_COLORS[r.groupPostFixedColor])groupPostFixedColor.value=r.groupPostFixedColor;if(Array.isArray(r.groupPostBackgroundColors)){document.querySelectorAll('.group-post-bg-color').forEach(el=>el.checked=r.groupPostBackgroundColors.includes(el.value));}if(r.groupPostMaxChars)groupPostMaxChars.value=Math.min(130,Math.max(40,parseInt(r.groupPostMaxChars)||100));toggleGroupPostBackgroundOptions();const c=await getUnifiedAiConfig();groupPostAiProvider.value=c.provider;groupPostAiKey.value=c.key;renderGroupPostModels(c.provider,c.model==="gemini-3.6-flash"?"gemini-flash-lite-latest":c.model);groupPostAiUrl.value=c.url;});
 chrome.storage.onChanged.addListener(c=>{if(c.groupPostStatus)groupPostStatus.textContent=c.groupPostStatus.newValue;if(c.groupPostActive!==undefined)setGroupPostRunning(c.groupPostActive.newValue);if(c.groupPostDone||c.groupPostSkipped||c.groupPostTotal)chrome.storage.local.get(["groupPostDone","groupPostSkipped","groupPostTotal"],r=>groupPostCount.textContent=t("p.gpCount",{d:r.groupPostDone||0,t:r.groupPostTotal||0,s:r.groupPostSkipped||0}));});
 
 // SHARE BAI FACEBOOK VAO NHOM - state va logic tach rieng voi dang bai AI
@@ -1555,7 +1823,7 @@ groupShareStartBtn.onclick=async()=>{
   const interGroupDelay=Math.min(3600,Math.max(5,parseInt(groupShareInterDelay.value)||30)),aiConfig=await getUnifiedAiConfig();
   if(!aiConfig.key){groupShareStatus.textContent=t("p.shNeedLeadKey");return;}
   if(!aiConfig.model){groupShareStatus.textContent=t("p.shNeedLeadModel");return;}
-  const running=await chrome.storage.local.get(["groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","groupInteractActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","isRunning","friendConfirmActive","isScraping"]);
+  const running=await chrome.storage.local.get(["groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","groupInteractActive","groupCommentActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","isRunning","friendConfirmActive","friendFoFActive","friendFoFScanActive","isScraping"]);
   if(Object.entries(running).some(([key,value])=>key!=="groupShareActive"&&!!value)){groupShareStatus.textContent=t("p.shBusyOther");return;}
   if(running.groupShareActive){groupShareStatus.textContent=t("p.shBusySelf");return;}
   const draftUrl=shareComparableUrl(groupShareSourceUrl.value),storedDraftUrl=shareComparableUrl(shareAiSourceUrl),typedSource=groupShareSourceText.value.replace(/\s+/g," ").trim();
@@ -1928,7 +2196,7 @@ salesStartBtn.onclick=async()=>{
   if(salesIsRunning)return;
   setSalesRunning(true);
   try{
-    const other=await chrome.storage.local.get(["groupPostActive","groupShareActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","isRunning","friendConfirmActive","isScraping","salesPostActive","trendLearnActive","trendPostActive"]);
+    const other=await chrome.storage.local.get(["groupPostActive","groupShareActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","isRunning","friendConfirmActive","friendFoFActive","friendFoFScanActive","isScraping","salesPostActive","trendLearnActive","trendPostActive"]);
     if(Object.entries(other).some(([key,value])=>key!=="salesPostActive"&&!!value))throw new Error("Một tính năng Facebook khác đang chạy; hãy dừng trước khi đăng bán hàng");
     if(other.salesPostActive)throw new Error("Một phiên đăng bán hàng đang chạy");
     const cfg=await buildSalesConfig(),tab=await getActiveTab();if(!tab)throw new Error("Không tìm thấy tab Facebook");
@@ -1965,8 +2233,22 @@ const trendPostBtn=$("trendPostBtn"),trendPostStopBtn=$("trendPostStopBtn"),tren
 const trendLearnStatus=$("trendLearnStatus"),trendLearnCount=$("trendLearnCount"),trendPostStatus=$("trendPostStatus"),trendPostCount=$("trendPostCount");
 const trendOutline=$("trendOutline"),trendPreview=$("trendPreview"),trendAiSummary=$("trendAiSummary");
 const trendLearnedList=$("trendLearnedList"),trendSelectedPostCount=$("trendSelectedPostCount"),trendSelectAllPostsBtn=$("trendSelectAllPostsBtn"),trendClearPostsBtn=$("trendClearPostsBtn"),trendDeleteSelectedPostsBtn=$("trendDeleteSelectedPostsBtn");
-let trendGroups=[],trendLearnRunning=false,trendPostRunning=false,trendPostSelectedIds=new Set();
+let trendGroups=[],trendLearnRunning=false,trendPostRunning=false,trendPostSelectedIds=new Set(),trendTargetGroupKeys=new Set();
 function trendEsc(v){return String(v||"").replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));}
+function normalizeTrendGroupSearch(v){
+  return String(v||"").normalize("NFD").replace(/\p{M}/gu,"").toLocaleLowerCase("vi").trim();
+}
+function trendGroupMatchesKeyword(name,keyword){
+  const query=normalizeTrendGroupSearch(keyword),candidate=normalizeTrendGroupSearch(name);
+  if(!query)return true;
+  // A two-letter abbreviation such as "AI" must be its own word. Otherwise
+  // it also matches unrelated Vietnamese names such as "Chai" or "Main".
+  if(query.length<=2){
+    const escaped=query.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+    return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,"u").test(candidate);
+  }
+  return candidate.includes(query);
+}
 function trendLearnMode(){
   const mode=String(trendLearnSourceMode?.value||"").trim();
   if(["links","source-selected","target-selected"].includes(mode))return mode;
@@ -1989,10 +2271,15 @@ function setTrendPostRunning(v){trendPostRunning=!!v;trendPostBtn.innerHTML=tren
 function renderTrendGroups(groups){
   const seen=new Set();
   trendGroups=(groups||[]).filter(g=>{const k=groupPostKey(g);if(!k||seen.has(k))return false;seen.add(k);return true;});
-  const html=trendGroups.length?trendGroups.map(g=>{const k=groupPostKey(g);return `<label data-name="${trendEsc(String(g.name||"").toLocaleLowerCase("vi"))}" style="display:flex;align-items:center;gap:7px;padding:5px;margin:0;border-bottom:1px solid #eee;min-width:0"><input class="trend-check" type="checkbox" value="${trendEsc(k)}" style="width:auto"><img src="${trendEsc(g.icon||"icon128.png")}" style="width:28px;height:28px;border-radius:50%;object-fit:cover"><span style="font-size:12px;overflow:hidden;text-overflow:ellipsis">${trendEsc(g.name)}</span></label>`;}).join(""):'<div class="hint" style="padding:6px">Chưa có danh sách nhóm</div>';
-  if(trendSourceList)trendSourceList.innerHTML=html;
-  if(trendTargetList)trendTargetList.innerHTML=html;
+  const groupRows=(restoreTargets=false)=>trendGroups.length?trendGroups.map(g=>{const k=groupPostKey(g),checked=restoreTargets&&trendTargetGroupKeys.has(k)?" checked":"";return `<label data-name="${trendEsc(String(g.name||""))}" style="display:flex;align-items:center;gap:7px;padding:5px;margin:0;border-bottom:1px solid #eee;min-width:0"><input class="trend-check" type="checkbox" value="${trendEsc(k)}"${checked} style="width:auto"><img src="${trendEsc(g.icon||"icon128.png")}" style="width:28px;height:28px;border-radius:50%;object-fit:cover"><span style="font-size:12px;overflow:hidden;text-overflow:ellipsis">${trendEsc(g.name)}</span></label>`;}).join(""):'<div class="hint" style="padding:6px">Chưa có danh sách nhóm</div>';
+  if(trendSourceList)trendSourceList.innerHTML=groupRows(false);
+  if(trendTargetList)trendTargetList.innerHTML=groupRows(true);
   updateTrendPostPlan();
+}
+function rememberTrendTargetGroups(){
+  if(!trendTargetList)return Promise.resolve();
+  trendTargetGroupKeys=new Set([...trendTargetList.querySelectorAll(".trend-check:checked")].map(input=>String(input.value||"")).filter(Boolean));
+  return chrome.storage.sync.set({trendTargetGroupKeys:[...trendTargetGroupKeys]});
 }
 function selectedTrendGroups(listEl){
   if(!listEl)return [];
@@ -2071,7 +2358,7 @@ function readTrendBackgroundConfig(){
     mode,
     fixedColor,
     colors:colors.length?[...new Set(colors)]:allowed,
-    maxChars:Math.min(140,Math.max(40,parseInt(trendBackgroundMaxChars?.value)||100)),
+    maxChars:Math.min(130,Math.max(40,parseInt(trendBackgroundMaxChars?.value)||100)),
     fallback:"skip"
   };
 }
@@ -2161,16 +2448,16 @@ document.querySelectorAll(".trend-distribution-mode").forEach(input=>input.addEv
 }));
 [trendTargetGroups,trendPostsPerGroup].forEach(el=>el?.addEventListener("change",updateTrendPostPlan));
 trendTargetLinks?.addEventListener("input",updateTrendPostPlan);
-trendTargetList?.addEventListener("change",updateTrendPostPlan);
+trendTargetList?.addEventListener("change",()=>{rememberTrendTargetGroups();updateTrendPostPlan();});
 trendBackgroundEnabled?.addEventListener("change",()=>{toggleTrendBackgroundOptions();saveTrendBackgroundDraft();});
 trendBackgroundMode?.addEventListener("change",()=>{toggleTrendBackgroundOptions();saveTrendBackgroundDraft();});
 trendFixedColor?.addEventListener("change",saveTrendBackgroundDraft);
 trendBackgroundMaxChars?.addEventListener("change",saveTrendBackgroundDraft);
 document.querySelectorAll(".trend-post-bg-color").forEach(el=>el.addEventListener("change",saveTrendBackgroundDraft));
-if(trendSourceKeyword)trendSourceKeyword.oninput=()=>{const k=trendSourceKeyword.value.trim().toLocaleLowerCase("vi");trendSourceList.querySelectorAll("label[data-name]").forEach(r=>r.style.display=!k||r.dataset.name.includes(k)?"flex":"none");};
-if(trendTargetKeyword)trendTargetKeyword.oninput=()=>{const k=trendTargetKeyword.value.trim().toLocaleLowerCase("vi");trendTargetList.querySelectorAll("label[data-name]").forEach(r=>r.style.display=!k||r.dataset.name.includes(k)?"flex":"none");};
+if(trendSourceKeyword)trendSourceKeyword.oninput=()=>{const k=trendSourceKeyword.value;trendSourceList.querySelectorAll("label[data-name]").forEach(r=>r.style.display=trendGroupMatchesKeyword(r.dataset.name,k)?"flex":"none");};
+if(trendTargetKeyword)trendTargetKeyword.oninput=()=>{const k=trendTargetKeyword.value;trendTargetList.querySelectorAll("label[data-name]").forEach(r=>r.style.display=trendGroupMatchesKeyword(r.dataset.name,k)?"flex":"none");};
 if(selectAllTrendSourceBtn)selectAllTrendSourceBtn.onclick=()=>{const rows=[...trendSourceList.querySelectorAll("label[data-name]")].filter(r=>r.style.display!=="none"),bs=rows.map(r=>r.querySelector(".trend-check")).filter(Boolean),on=bs.some(b=>!b.checked);bs.forEach(b=>b.checked=on);};
-if(selectAllTrendTargetBtn)selectAllTrendTargetBtn.onclick=()=>{const rows=[...trendTargetList.querySelectorAll("label[data-name]")].filter(r=>r.style.display!=="none"),bs=rows.map(r=>r.querySelector(".trend-check")).filter(Boolean),on=bs.some(b=>!b.checked);bs.forEach(b=>b.checked=on);};
+if(selectAllTrendTargetBtn)selectAllTrendTargetBtn.onclick=()=>{const rows=[...trendTargetList.querySelectorAll("label[data-name]")].filter(r=>r.style.display!=="none"),bs=rows.map(r=>r.querySelector(".trend-check")).filter(Boolean),on=bs.some(b=>!b.checked);bs.forEach(b=>b.checked=on);rememberTrendTargetGroups();updateTrendPostPlan();};
 if(trendLearnedList)trendLearnedList.addEventListener("change",e=>{const input=e.target.closest?.(".trend-source-post-check");if(!input)return;const id=String(input.dataset.postId||"");if(!id)return;if(input.checked)trendPostSelectedIds.add(id);else trendPostSelectedIds.delete(id);updateTrendSelectedPostCount();chrome.storage.sync.set({trendPostSelectedIds:[...trendPostSelectedIds]});updateTrendPostPlan();});
 async function deleteTrendLearnedPosts(ids,confirmDelete=true){
   const wanted=new Set((Array.isArray(ids)?ids:[]).map(String).filter(Boolean));
@@ -2295,7 +2582,7 @@ if(trendLearnBtn)trendLearnBtn.onclick=async()=>{
   }
   setTrendLearnRunning(true);
   try{
-    const other=await chrome.storage.local.get(["groupPostActive","groupShareActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","isRunning","friendConfirmActive","isScraping","salesPostActive","trendPostActive"]);
+    const other=await chrome.storage.local.get(["groupPostActive","groupShareActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","isRunning","friendConfirmActive","friendFoFActive","friendFoFScanActive","isScraping","salesPostActive","trendPostActive"]);
     if(Object.values(other).some(Boolean))throw new Error("Một tính năng khác đang chạy; hãy dừng trước khi học bài");
     const mode=trendLearnMode();
     let picked=trendSourceGroupsForRun();
@@ -2308,7 +2595,9 @@ if(trendLearnBtn)trendLearnBtn.onclick=async()=>{
     const runId=`trend-learn-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
     const learnCfg={groups:picked.slice(0,20),perGroup:unlimited?0:per,unlimited};
     await persistTrendDraft();
-    await chrome.storage.local.set({trendLearnConfig:learnCfg,trendLearnRunId:runId,trendLearnOwnerTabId:tab.id,trendLearnActive:true,trendLearnIndex:0,trendLearnPosts:[],trendLearnCount:0,trendLearnReady:false,trendLastDiag:null,trendLearnStatus:`Đang chuẩn bị học ${learnCfg.groups.length} nhóm${learnNote}${unlimited?" — không giới hạn số bài":""}...`});
+    await chrome.storage.local.set({trendLearnConfig:learnCfg,trendLearnRunId:runId,trendLearnOwnerTabId:tab.id,trendLearnActive:true,trendLearnIndex:0,trendLearnPosts:[],trendLearnCount:0,trendLearnReady:false,trendLearnOutline:"",trendRewriteDrafts:[],trendLastDiag:null,trendLearnStatus:`Đang chuẩn bị học ${learnCfg.groups.length} nhóm${learnNote}${unlimited?" — không giới hạn số bài":""}...`});
+    if(trendOutline)trendOutline.classList.add("hidden");
+    if(trendPreview)trendPreview.classList.add("hidden");
     trendLearnStatus.textContent=`Đang chuẩn bị học ${learnCfg.groups.length} nhóm${learnNote}${unlimited?" — không giới hạn số bài":""}...`;
     const first=learnCfg.groups[0];
     if(!tab.url?.includes("facebook.com/groups/")){await chrome.tabs.update(tab.id,{url:first.url});await new Promise(r=>setTimeout(r,4500));}
@@ -2389,7 +2678,7 @@ if(trendPostBtn)trendPostBtn.onclick=async()=>{
   if(trendPostRunning)return;
   setTrendPostRunning(true);
   try{
-    const other=await chrome.storage.local.get(["groupPostActive","groupShareActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","isRunning","friendConfirmActive","isScraping","salesPostActive","trendLearnActive"]);
+    const other=await chrome.storage.local.get(["groupPostActive","groupShareActive","isAICommenting","isFeedInteracting","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","isRunning","friendConfirmActive","friendFoFActive","friendFoFScanActive","isScraping","salesPostActive","trendLearnActive"]);
     if(Object.values(other).some(Boolean))throw new Error("Một tính năng khác đang chạy; hãy dừng trước khi đăng");
     const picked=trendTargetGroupsForRun();
     if(!picked.length)throw new Error("Hãy tích ít nhất một nhóm đích");
@@ -2452,7 +2741,7 @@ if(trendPostBtn)trendPostBtn.onclick=async()=>{
 if(trendPostStopBtn)trendPostStopBtn.onclick=async()=>{setTrendPostRunning(false);await chrome.storage.local.set({trendPostActive:false,trendPostNextAt:0,trendPostStage:"",trendPostStatus:"Đã dừng đăng bài viết lại"});broadcastToFacebookTabs({action:"stopTrendPost"});const tab=await getActiveTab();if(tab?.url?.includes("facebook.com"))chrome.tabs.sendMessage(tab.id,{action:"stopTrendPost"});};
 if(trendPostResetBtn)trendPostResetBtn.onclick=async()=>{setTrendPostRunning(false);const tab=await getActiveTab();if(tab?.url?.includes("facebook.com"))chrome.tabs.sendMessage(tab.id,{action:"resetTrendPost"});await chrome.storage.local.set({trendPostActive:false,trendPostRunId:"",trendPostOwnerTabId:0,trendPostConfig:null,trendPostIndex:0,trendPostDone:0,trendPostSkipped:0,trendPostTotal:0,trendPostNextAt:0,trendPostLastColor:"",trendPostStage:"",trendPostSubmitIndex:-1,trendPostSubmitDispatchedAt:0,trendPostStatus:"Đã reset đăng bài viết lại"});broadcastToFacebookTabs({action:"resetTrendPost"});};
 try{
-  chrome.storage.sync.get(["trendPerGroup","trendLearnUnlimited","trendPrompt","trendGroupPrompt","trendSourceLinks","trendTargetLinks","trendStyleProfile","trendTargetGroups","trendInterDelay","trendPostsPerGroup","trendPostDelay","trendPostSourceMode","trendPostDistributionMode","trendPostSelectedIds","trendLearnSourceMode","trendLearnFromTarget","trendBackgroundEnabled","trendBackgroundMode","trendBackgroundFixedColor","trendBackgroundColors","trendBackgroundMaxChars"],r=>{
+  chrome.storage.sync.get(["trendPerGroup","trendLearnUnlimited","trendPrompt","trendGroupPrompt","trendSourceLinks","trendTargetLinks","trendStyleProfile","trendTargetGroups","trendTargetGroupKeys","trendInterDelay","trendPostsPerGroup","trendPostDelay","trendPostSourceMode","trendPostDistributionMode","trendPostSelectedIds","trendLearnSourceMode","trendLearnFromTarget","trendBackgroundEnabled","trendBackgroundMode","trendBackgroundFixedColor","trendBackgroundColors","trendBackgroundMaxChars"],r=>{
     if(r.trendPerGroup!==undefined&&trendPerGroup)trendPerGroup.value=Math.max(1,parseInt(r.trendPerGroup)||10);
     if(trendLearnUnlimited)trendLearnUnlimited.checked=r.trendLearnUnlimited!==false;
     toggleTrendLearnLimit();
@@ -2464,6 +2753,8 @@ try{
     if(trendPostsPerGroup)trendPostsPerGroup.value=Math.max(1,Math.min(30,parseInt(r.trendPostsPerGroup)||1));
     if(trendPostDelay)trendPostDelay.value=Math.min(3600,Math.max(5,parseInt(r.trendPostDelay??r.trendInterDelay)||30));
     if(trendPostSourceMode)trendPostSourceMode.value=r.trendPostSourceMode==="sequential"?"sequential":"selected";
+    trendTargetGroupKeys=new Set(Array.isArray(r.trendTargetGroupKeys)?r.trendTargetGroupKeys.map(String).filter(Boolean):[]);
+    if(trendTargetList)trendTargetList.querySelectorAll(".trend-check").forEach(input=>input.checked=trendTargetGroupKeys.has(String(input.value||"")));
     const savedDistribution=["auto","many-to-one","one-to-many","many-to-many"].includes(r.trendPostDistributionMode)?r.trendPostDistributionMode:"auto";
     document.querySelectorAll(".trend-distribution-mode").forEach(input=>input.checked=input.value===savedDistribution);
     toggleTrendPostDistributionUI();
@@ -2479,7 +2770,7 @@ try{
     if(trendBackgroundMode)trendBackgroundMode.value=r.trendBackgroundMode==="fixed"?"fixed":"random";
     if(trendFixedColor&&GROUP_POST_PREVIEW_COLORS[r.trendBackgroundFixedColor])trendFixedColor.value=r.trendBackgroundFixedColor;
     if(Array.isArray(r.trendBackgroundColors))document.querySelectorAll(".trend-post-bg-color").forEach(el=>el.checked=r.trendBackgroundColors.includes(el.value));
-    if(trendBackgroundMaxChars&&r.trendBackgroundMaxChars)trendBackgroundMaxChars.value=r.trendBackgroundMaxChars;
+    if(trendBackgroundMaxChars&&r.trendBackgroundMaxChars)trendBackgroundMaxChars.value=Math.min(130,Math.max(40,parseInt(r.trendBackgroundMaxChars)||100));
     toggleTrendBackgroundOptions();
     applyTrendLearnMode();
     updateTrendPostPlan();
@@ -2732,20 +3023,298 @@ new MutationObserver(()=>{
   queueMicrotask(()=>{iconizeQueued=false;try{iconize();}catch{}});
 }).observe(document.body,{childList:true,characterData:true,subtree:true});
 
+// LỊCH CHẠY — kho lịch tập trung. Lịch chỉ chứa snapshot cấu hình không
+// nhạy cảm; background lấy AI profile thống nhất đúng lúc chạy nếu cần.
+const scheduleFeature=$("scheduleFeature"),scheduleWhen=$("scheduleWhen"),scheduleCreateBtn=$("scheduleCreateBtn"),scheduleStatus=$("scheduleStatus"),scheduleList=$("scheduleList");
+const groupScheduleWhen=$("groupScheduleWhen"),groupScheduleBtn=$("groupScheduleBtn"),groupScheduleStatus=$("groupScheduleStatus");
+const discoverScheduleWhen=$("discoverScheduleWhen"),discoverScheduleBtn=$("discoverScheduleBtn"),discoverScheduleStatus=$("discoverScheduleStatus");
+const inlineScheduleBindings=[
+  {feature:"friend",when:"friendScheduleWhen",button:"friendScheduleBtn",status:"friendScheduleStatus"},
+  {feature:"scrape",when:"scrapeScheduleWhen",button:"scrapeScheduleBtn",status:"scrapeScheduleStatus"},
+  {feature:"feed",when:"feedScheduleWhen",button:"feedScheduleBtn",status:"feedScheduleStatus"},
+  {feature:"aiFeed",when:"aiFeedScheduleWhen",button:"aiFeedScheduleBtn",status:"aiFeedScheduleStatus"},
+  {feature:"groupInteract",when:"groupInteractScheduleWhen",button:"groupInteractScheduleBtn",status:"groupInteractScheduleStatus"},
+  {feature:"groupComment",when:"groupCommentScheduleWhen",button:"groupCommentScheduleBtn",status:"groupCommentScheduleStatus"},
+  {feature:"groupPost",when:"groupPostScheduleWhen",button:"groupPostScheduleBtn",status:"groupPostScheduleStatus"},
+  {feature:"share",when:"shareScheduleWhen",button:"shareScheduleBtn",status:"shareScheduleStatus"},
+  {feature:"sales",when:"salesScheduleWhen",button:"salesScheduleBtn",status:"salesScheduleStatus"},
+  {feature:"trendLearn",when:"trendLearnScheduleWhen",button:"trendLearnScheduleBtn",status:"trendLearnScheduleStatus"},
+  {feature:"trendPost",when:"trendPostScheduleWhen",button:"trendPostScheduleBtn",status:"trendPostScheduleStatus"}
+];
+const scheduleDateText=value=>{
+  const time=Number(value)||0;
+  if(!time)return t("sch.unknownTime");
+  try{return new Intl.DateTimeFormat(I18N_LANG||"vi",{dateStyle:"medium",timeStyle:"short"}).format(new Date(time));}catch{return new Date(time).toLocaleString();}
+};
+const scheduleFeatureLabel=feature=>t(`sch.feature.${feature}`)||feature;
+const scheduleErrorText=error=>t("sch.error",{error:String(error||t("sch.unknownTime"))});
+function scheduleGroupValue(group={}){
+  const url=canonicalFacebookUrl(group.url||"");
+  if(!url)return null;
+  return {id:String(group.id||""),name:String(group.name||group.id||"Nhóm Facebook").trim().slice(0,180),url,manualLink:!!group.manualLink,explicitName:!!group.explicitName};
+}
+function scheduleGroupValues(groups=[]){return (Array.isArray(groups)?groups:[]).map(scheduleGroupValue).filter(Boolean);}
+function schedulePageValue(page){
+  if(!page?.url)return null;
+  const url=canonicalFacebookUrl(page.url);if(!url)return null;
+  return {id:String(page.id||"").slice(0,180),name:String(page.name||"Trang Facebook").trim().slice(0,180),url};
+}
+async function scheduleSelectedPage(){
+  let page=selectedManagedPage;
+  if(!page){
+    const saved=await chrome.storage.sync.get("pageSelected");page=saved.pageSelected||null;
+  }
+  if(!page){
+    const saved=await chrome.storage.local.get("managedPages");page=Array.isArray(saved.managedPages)?saved.managedPages[0]:null;
+  }
+  const safe=schedulePageValue(page);if(!safe)throw new Error(t("sch.needPage"));
+  return safe;
+}
+async function scheduleSnapshot(feature){
+  if(feature==="keyword"){
+    const keyword=String(groupKeyword?.value||"").trim();
+    if(!keyword)throw new Error(t("sch.needKeyword"));
+    return {feature,label:scheduleFeatureLabel(feature),config:{keyword,minMembers:Math.max(0,parseInt(groupMinMembers?.value)||0),minPostsPerDay:Math.max(0,parseInt(groupMinPosts?.value)||0),targetJoin:Math.max(1,parseInt(groupTarget?.value)||10),minDelay:Math.max(1,parseInt(groupMinDelay?.value)||5),maxDelay:Math.max(1,parseInt(groupMaxDelay?.value)||15),confirmWaitSeconds:readJoinConfirmSeconds(groupConfirmWait),answersText:String(groupAnswers?.value||"").trim(),aiJoinEnabled:!!groupAiAnswersEnabled?.checked,aiJoinPrompt:String(groupAiAnswersPrompt?.value||"").trim()}};
+  }
+  if(feature==="discover")return {feature,label:scheduleFeatureLabel(feature),config:{target:Math.max(1,parseInt(discoverTarget?.value)||10),minDelay:Math.max(1,parseInt(discoverMinDelay?.value)||5),maxDelay:Math.max(1,parseInt(discoverMaxDelay?.value)||15),confirmWaitSeconds:readJoinConfirmSeconds(discoverConfirmWait),answersText:String(discoverAnswers?.value||"").trim(),aiJoinEnabled:!!groupAiAnswersEnabled?.checked,aiJoinPrompt:String(groupAiAnswersPrompt?.value||"").trim()}};
+  if(feature==="friend"){
+    const raw=saveConfig();
+    if(raw.mode==="friend-of-friend")throw new Error(t("sch.friendFoFUnsupported"));
+    if(raw.mode==="group-common"&&!raw.groups.length)throw new Error(t("sch.needFriendGroups"));
+    return {feature,label:scheduleFeatureLabel(raw.mode==="confirm"?"friendConfirm":"friend"),config:{...raw,groups:scheduleGroupValues(raw.groups)}};
+  }
+  if(feature==="scrape"){
+    const active=await getActiveTab(),source=String(scrapeSourceUrl?.value||"").trim()||(active?.url?.includes("facebook.com")?active.url:"");
+    if(!source)throw new Error(t("sch.needScrapeSource"));
+    try{new URL(source);}catch{throw new Error(t("p.scBadUrl"));}
+    return {feature,label:scheduleFeatureLabel(feature),config:{count:Math.max(1,Math.min(10000,parseInt(scrapeNum?.value)||200)),skipAds:!!scrapeSkipAds?.checked,sourceUrl:source}};
+  }
+  if(feature==="feed")return {feature,label:scheduleFeatureLabel(feature),config:{reaction:feedReaction?.value||"random",target:Math.max(1,Math.min(100,parseInt(feedTarget?.value)||20)),minDelay:Math.max(1,parseInt(feedMinDelay?.value)||3),maxDelay:Math.max(1,parseInt(feedMaxDelay?.value)||8)}};
+  if(feature==="aiFeed")return {feature,label:scheduleFeatureLabel(feature),config:{target:Math.max(1,Math.min(100,parseInt(aiTarget?.value)||10)),minDelay:Math.max(1,parseInt(aiMinDelay?.value)||10),maxDelay:Math.max(1,parseInt(aiMaxDelay?.value)||20),economyMode:aiEconomyMode?.value||"balanced",batchSize:Math.max(2,Math.min(10,parseInt(aiBatchSize?.value)||5)),cacheDays:Math.max(0,parseInt(aiCacheDays?.value)||7)}};
+  if(feature==="groupInteract"||feature==="groupComment"){
+    const selected=scheduleGroupValues(getSelectedJoinedGroups()),limit=Math.max(1,Math.min(500,parseInt(groupInteractGroupLimit?.value)||1)),groups=selected.slice(0,limit);
+    if(!groups.length)throw new Error(t("sch.needJoinedGroups"));
+    return {feature,label:scheduleFeatureLabel(feature),config:{groups,perGroup:Math.max(1,Math.min(100,parseInt(groupInteractTarget?.value)||5)),minDelay:Math.max(1,parseInt(groupInteractMinDelay?.value)||5),maxDelay:Math.max(1,parseInt(groupInteractMaxDelay?.value)||12),reaction:groupInteractReaction?.value||"random",targetGroups:limit}};
+  }
+  if(feature==="groupPost"){
+    const selected=scheduleGroupValues(selectedPostGroups()),limit=Math.max(1,Math.min(500,parseInt(groupPostTargetGroups?.value)||1)),groups=selected.slice(0,limit),prompt=String(groupPostPrompt?.value||"").trim();
+    if(!groups.length)throw new Error(t("sch.needPostGroups"));
+    if(!prompt.includes("{groupName}"))throw new Error(t("p.gpNeedPrompt"));
+    const ai=await getUnifiedAiConfig();if(!ai.key||!ai.model)throw new Error(t("p.gpNeedKeyModel"));
+    return {feature,label:scheduleFeatureLabel(feature),config:{groups,prompt,minDelay:GROUP_POST_AUTO_TIMING.minDelay,maxDelay:GROUP_POST_AUTO_TIMING.maxDelay,interGroupDelay:Math.min(3600,Math.max(5,parseInt(groupPostInterDelay?.value)||30)),background:readGroupPostBackgroundConfig()}};
+  }
+  if(feature==="share"){
+    let sourceUrl;try{sourceUrl=normalizeFacebookShareSource(groupShareSourceUrl?.value);}catch(error){throw new Error(error.message);}
+    const picked=scheduleGroupValues(selectedShareGroups()),limit=Math.max(1,parseInt(groupShareTargetGroups?.value)||1),groups=picked.slice(0,limit),prompt=String(groupSharePrompt?.value||"").trim(),typed=String(groupShareSourceText?.value||"").replace(/\s+/g," ").trim();
+    if(!groups.length)throw new Error(t("sch.needShareGroups"));
+    if(!prompt.includes("{postText}")||!prompt.includes("{groupName}"))throw new Error(t("p.shNeedPrompt"));
+    const ai=await getUnifiedAiConfig();if(!ai.key||!ai.model)throw new Error(t("p.shNeedLeadBoth"));
+    if(typed&&typed.length<10)throw new Error(t("p.shShortPost"));
+    return {feature,label:scheduleFeatureLabel(feature),config:{sourceUrl,groups,prompt,interGroupDelay:Math.min(3600,Math.max(5,parseInt(groupShareInterDelay?.value)||30)),manualSourceText:typed.length>=10?typed:""}};
+  }
+  if(feature==="sales"){
+    const raw=await buildSalesConfig();
+    const {aiConfig:_salesAi,...snapshot}=raw;
+    return {feature,label:scheduleFeatureLabel(feature),config:{...snapshot,groups:scheduleGroupValues(raw.groups)}};
+  }
+  if(feature==="trendLearn"){
+    const mode=trendLearnMode(),picked=scheduleGroupValues(trendSourceGroupsForRun());
+    if(mode==="links"&&!String(trendSourceLinks?.value||"").trim())throw new Error(t("sch.needTrendSources"));
+    if(!picked.length)throw new Error(t("sch.needTrendSources"));
+    return {feature,label:scheduleFeatureLabel(feature),config:{groups:picked.slice(0,20),perGroup:trendLearnUnlimited?.checked?0:Math.max(1,parseInt(trendPerGroup?.value)||10),unlimited:trendLearnUnlimited?.checked!==false}};
+  }
+  if(feature==="trendPost"){
+    const picked=scheduleGroupValues(trendTargetGroupsForRun()),target=Math.max(1,Math.min(500,parseInt(trendTargetGroups?.value)||3)),groups=picked.slice(0,target),sourceMode=trendPostSourceMode?.value==="sequential"?"sequential":"selected",requested=groups.length*Math.max(1,Math.min(30,parseInt(trendPostsPerGroup?.value)||1)),sourceSelection=await trendPostSourcePostsForRun(sourceMode==="sequential"?requested:null),posts=sourceSelection.posts;
+    if(!groups.length)throw new Error(t("sch.needTrendTargets"));
+    if(!posts.length)throw new Error(t("sch.needTrendPosts"));
+    const distribution=sourceSelection.mode==="selected"?trendPostDistributionMode():"sequential",plan=sourceSelection.mode==="selected"?trendSelectedPostPlanForMode(posts,groups,distribution):trendSequentialPostPlan(posts,groups,Math.max(1,parseInt(trendPostsPerGroup?.value)||1)),jobs=[];
+    plan.entries.forEach(entry=>entry.posts.forEach((post,postIndex)=>{const sourcePostId=trendLearnedPostId(post);jobs.push({group:{...entry.group},groupIndex:entry.groupIndex,postIndex,groupPostTotal:entry.posts.length,sourcePostIds:sourcePostId?[sourcePostId]:[],sourceText:trendSourceText([post]),draft:"",variant:jobs.length+1});}));
+    if(!jobs.length)throw new Error(t("sch.needTrendPosts"));
+    const ai=await getUnifiedAiConfig();if(!ai.key||!ai.model)throw new Error(t("p.gpNeedKeyModel"));
+    return {feature,label:scheduleFeatureLabel(feature),config:{groups,jobs,drafts:[],sourceText:trendSourceText(posts),sourcePostIds:[...new Set(posts.map(trendLearnedPostId).filter(Boolean))],sourceMode:sourceSelection.mode,distribution,postsPerGroup:Math.max(1,...plan.counts),postDelay:Math.min(3600,Math.max(5,parseInt(trendPostDelay?.value)||30)),prompt:trendRewritePrompt(),styleProfileId:trendStyleProfile?.value||"",interDelay:Math.min(3600,Math.max(5,parseInt(trendPostDelay?.value)||30)),anonymousMode:!!(trendAnonymousEnabled?.checked),background:readTrendBackgroundConfig()}};
+  }
+  if(feature==="pageGroupJoin"){
+    const page=await scheduleSelectedPage(),mode=pageJoinMode,keyword=String(pageGroupKeyword?.value||"").trim();
+    if(mode==="keyword"&&!keyword)throw new Error(t("sch.needPageKeyword"));
+    return {feature,label:scheduleFeatureLabel(feature),config:{page,mode,keyword,target:Math.max(1,Math.min(100,parseInt(pageGroupTarget?.value)||10)),minDelay:Math.max(5,Math.min(3600,parseInt(pageGroupMinDelay?.value)||15)),maxDelay:Math.max(5,Math.min(3600,parseInt(pageGroupMaxDelay?.value)||30)),answers:String(pageGroupAnswers?.value||"").split(/\r?\n/).map(s=>s.trim()).filter(Boolean),aiEnabled:!!pageGroupAiEnabled?.checked,aiPrompt:String(pageGroupAiPrompt?.value||"").trim()}};
+  }
+  if(feature==="pageGroupPost"){
+    const page=await scheduleSelectedPage(),picked=await pageGroupPostTargets(),limit=Math.max(1,Math.min(100,parseInt(pageGroupPostTarget?.value)||picked.length)),groups=scheduleGroupValues(picked).slice(0,limit);
+    if(!groups.length)throw new Error(t("sch.needPagePostGroups"));
+    return {feature,label:scheduleFeatureLabel(feature),config:{page,groups,target:groups.length,minDelay:Math.max(5,Math.min(3600,parseInt(pageGroupPostMinDelay?.value)||30)),maxDelay:Math.max(5,Math.min(3600,parseInt(pageGroupPostMaxDelay?.value)||60)),prompt:String(pageGroupPostPrompt?.value||"").trim()}};
+  }
+  if(feature==="pageWatch"){
+    const page=await scheduleSelectedPage(),keyword=String(pageWatchKeyword?.value||"").trim();if(!keyword)throw new Error(t("sch.needPageKeyword"));
+    return {feature,label:scheduleFeatureLabel(feature),config:{page,keyword,target:Math.max(1,Math.min(100,parseInt(pageWatchTarget?.value)||10)),minFollowers:Math.max(0,parseInt(pageWatchMinFollowers?.value)||0),exclude:String(pageWatchExclude?.value||"").trim()}};
+  }
+  if(feature==="pageComment"){
+    const page=await scheduleSelectedPage(),source=pageCommentSource?.value==="followed"?"followed":"feed",stored=await chrome.storage.local.get("pageFollowedPages"),pages=Array.isArray(stored.pageFollowedPages)?stored.pageFollowedPages.map(schedulePageValue).filter(Boolean):[];
+    if(source==="followed"&&!pages.length)throw new Error(t("sch.needFollowedPages"));
+    return {feature,label:scheduleFeatureLabel(feature),config:{page,source,pages,target:Math.max(1,Math.min(100,parseInt(pageCommentTarget?.value)||10)),minDelay:Math.max(5,Math.min(3600,parseInt(pageCommentMinDelay?.value)||20)),maxDelay:Math.max(5,Math.min(3600,parseInt(pageCommentMaxDelay?.value)||45)),prompt:String(pageCommentPrompt?.value||"").trim()}};
+  }
+  throw new Error(t("sch.unsupported"));
+}
+function renderScheduleList(items=[]){
+  if(!scheduleList)return;
+  const rows=Array.isArray(items)?[...items].sort((a,b)=>(Number(a.runAt)||0)-(Number(b.runAt)||0)):[];
+  if(!rows.length){scheduleList.innerHTML=`<div class="hint">${t("sch.empty")}</div>`;return;}
+  const fragment=document.createDocumentFragment();
+  rows.forEach(item=>{
+    const row=document.createElement("div");row.className="schedule-item";
+    const copy=document.createElement("div");
+    const title=document.createElement("div");title.className="schedule-item-title";title.textContent=item.label||scheduleFeatureLabel(item.feature);
+    const meta=document.createElement("div");meta.className="schedule-item-meta";meta.textContent=scheduleDateText(item.runAt);
+    const status=document.createElement("span");const state=item.status||"scheduled";status.className=`schedule-item-status ${state}`;status.textContent=t(`sch.state.${state}`);
+    copy.append(title,meta,status);
+    const actions=document.createElement("div");actions.className="schedule-item-actions";
+    if(state==="scheduled"){
+      const cancel=document.createElement("button");cancel.type="button";cancel.textContent=t("sch.cancel");cancel.onclick=()=>chrome.runtime.sendMessage({action:"scheduleCancel",id:item.id},res=>{if(chrome.runtime.lastError||!res?.ok)scheduleStatus.textContent=scheduleErrorText(chrome.runtime.lastError?.message||res?.error);});actions.appendChild(cancel);
+    }
+    const remove=document.createElement("button");remove.type="button";remove.textContent=t("sch.remove");remove.onclick=()=>chrome.runtime.sendMessage({action:"scheduleRemove",id:item.id},res=>{if(chrome.runtime.lastError||!res?.ok)scheduleStatus.textContent=scheduleErrorText(chrome.runtime.lastError?.message||res?.error);});actions.appendChild(remove);
+    row.append(copy,actions);fragment.appendChild(row);
+  });
+  scheduleList.replaceChildren(fragment);
+}
+function refreshScheduleList(){
+  chrome.storage.local.get("scheduledTasks",state=>renderScheduleList(state.scheduledTasks||[]));
+}
+function defaultScheduleTime(input){
+  if(!input)return;
+  const next=new Date(Date.now()+5*60*1000);next.setSeconds(0,0);
+  input.value=`${next.getFullYear()}-${String(next.getMonth()+1).padStart(2,"0")}-${String(next.getDate()).padStart(2,"0")}T${String(next.getHours()).padStart(2,"0")}:${String(next.getMinutes()).padStart(2,"0")}`;
+}
+async function createFeatureSchedule(feature,whenInput,statusEl,button){
+  try{
+    const runAt=new Date(whenInput?.value||"").getTime();
+    if(!Number.isFinite(runAt)||runAt<Date.now()+30*1000)throw new Error(t("sch.needFuture"));
+    const task=await scheduleSnapshot(feature);
+    if(button)button.disabled=true;
+    chrome.runtime.sendMessage({action:"scheduleCreate",task:{...task,runAt}},res=>{
+      if(button)button.disabled=false;
+      if(statusEl)statusEl.textContent=res?.ok?t("sch.saved",{time:scheduleDateText(runAt)}):scheduleErrorText(chrome.runtime.lastError?.message||res?.error);
+      refreshScheduleList();
+    });
+  }catch(error){if(button)button.disabled=false;if(statusEl)statusEl.textContent=error.message||t("sch.error");}
+}
+[scheduleWhen,groupScheduleWhen,discoverScheduleWhen,...inlineScheduleBindings.map(item=>$(item.when))].forEach(defaultScheduleTime);
+if(scheduleCreateBtn)scheduleCreateBtn.onclick=()=>createFeatureSchedule(scheduleFeature?.value||"discover",scheduleWhen,scheduleStatus,scheduleCreateBtn);
+if(groupScheduleBtn)groupScheduleBtn.onclick=()=>createFeatureSchedule("keyword",groupScheduleWhen,groupScheduleStatus,groupScheduleBtn);
+if(discoverScheduleBtn)discoverScheduleBtn.onclick=()=>createFeatureSchedule("discover",discoverScheduleWhen,discoverScheduleStatus,discoverScheduleBtn);
+inlineScheduleBindings.forEach(({feature,when,button,status})=>{
+  const whenInput=$(when),buttonEl=$(button),statusEl=$(status);
+  if(buttonEl)buttonEl.onclick=()=>createFeatureSchedule(feature,whenInput,statusEl,buttonEl);
+});
+chrome.storage.onChanged.addListener((changes,area)=>{if(area==="local"&&changes.scheduledTasks)renderScheduleList(changes.scheduledTasks.newValue||[]);});
+refreshScheduleList();
+
+// TRUNG TÂM TIẾN TRÌNH
+// Chỉ đọc các cờ/counter/status vốn có của từng state machine. Mỗi card gọi
+// đúng nút Dừng hiện có, nên không tạo đường Stop song song hoặc can thiệp
+// selector, proof và logic Facebook của bất kỳ tính năng nào.
+const runCenter=$("runCenter"),runCenterList=$("runCenterList");
+const RUN_CENTER_FEATURES=[
+  {active:"isRunning",name:"rc.friend",tab:"add",anchor:"panelAdd",stop:"startBtn",status:"friendStatus",done:"sentCount",total:s=>s.friendRunState?.config?.maxRequests},
+  {active:"friendConfirmActive",name:"rc.confirm",tab:"add",anchor:"panelAdd",stop:"startBtn",status:"friendConfirmStatus",done:"friendConfirmAccepted",total:s=>s.friendConfirmRunState?.config?.maxRequests},
+  {active:"friendFoFScanActive",name:"rc.friendFoFScan",tab:"add",anchor:"friendFoFStatus",stop:"startBtn",status:"friendFoFStatus",progress:state=>{const scan=state.friendFoFScanState||{};return `${runCenterNumber(scan.kind==="source"?scan.candidateCount:scan.sourceCount)}${t(scan.kind==="source"?"rc.candidates":"rc.sources")}`}},
+  {active:"friendFoFActive",name:"rc.friendFoF",tab:"add",anchor:"friendFoFStatus",stop:"startBtn",status:"friendFoFStatus",done:"friendFoFSent",total:s=>s.friendFoFRunState?.config?.maxRequests},
+  {active:"isScraping",name:"rc.scrape",tab:"scrape",anchor:"panelScrape",stop:"stopScrapeBtn",status:"scrapeStatus",done:"scrapeCount",total:"scrapeTarget",unit:"rc.posts"},
+  {active:"isFeedInteracting",name:"rc.feed",tab:"feed",anchor:"panelFeed",stop:"feedStopBtn",status:"feedStatus",done:"feedCount",total:s=>s.pendingFeedConfig?.target},
+  {active:"isAICommenting",name:"rc.aiFeed",tab:"feed",anchor:"panelFeed",stop:"aiStopBtn",status:"aiStatus",done:"aiCount",total:s=>s.aiActiveConfig?.target||s.pendingAIConfig?.target},
+  {active:"groupInteractActive",name:"rc.groupReact",tab:"group",anchor:"groupInteractStatus",stop:"groupInteractStopBtn",status:"groupInteractStatus",done:"groupInteractDone",total:"groupInteractTotal"},
+  {active:"groupCommentActive",name:"rc.groupComment",tab:"group",anchor:"groupCommentStatus",stop:"groupCommentStopBtn",status:"groupCommentStatus",done:"groupCommentDone",total:"groupCommentTotal"},
+  {active:"groupPostActive",name:"rc.groupPost",tab:"group",anchor:"groupPostStatus",stop:"groupPostStopBtn",status:"groupPostStatus",done:"groupPostDone",total:"groupPostTotal"},
+  {active:"isGroupJoining",name:"rc.groupJoin",tab:"group",subTab:"search",anchor:"groupStatus",stop:"groupStopBtn",status:"groupStatus",done:"groupJoined",total:s=>s.groupJoinRunConfig?.targetJoin},
+  {active:"isDiscoverJoining",name:"rc.groupDiscover",tab:"group",subTab:"discover",anchor:"discoverStatus",stop:"discoverStopBtn",status:"discoverStatus",done:"discoverJoined",total:s=>s.discoverRunConfig?.target},
+  {active:"groupShareActive",name:"rc.share",tab:"share",anchor:"groupShareStatus",stop:"groupShareStopBtn",status:"groupShareStatus",done:"groupShareDone",total:"groupShareTotal"},
+  {active:"salesPostActive",name:"rc.sales",tab:"sales",anchor:"salesPostStatus",stop:"salesStopBtn",status:"salesPostStatus",done:"salesPostDone",total:"salesPostTotal"},
+  {active:"trendLearnActive",name:"rc.trendLearn",tab:"trend",anchor:"trendLearnStatus",stop:"trendLearnStopBtn",status:"trendLearnStatus",done:"trendLearnCount",unit:"rc.posts"},
+  {active:"trendPostActive",name:"rc.trendPost",tab:"trend",anchor:"trendPostStatus",stop:"trendPostStopBtn",status:"trendPostStatus",done:"trendPostDone",total:"trendPostTotal"}
+];
+const RUN_CENTER_KEYS=[...new Set(RUN_CENTER_FEATURES.flatMap(feature=>[feature.active,feature.status,feature.done,typeof feature.total==="string"?feature.total:null]).filter(Boolean).concat([
+  "friendRunState","friendConfirmRunState","friendFoFRunState","friendFoFScanState","friendFoFScanActive","friendFoFSourceScanned","friendFoFActive","friendFoFStatus","friendFoFSent","pendingFeedConfig","aiActiveConfig","pendingAIConfig","groupJoinRunConfig","discoverRunConfig","pageGroupJoinConfig","pageGroupJoinRunState","pageGroupPostConfig","pageWatchConfig","pageCommentConfig"
+]))];
+const runCenterText=value=>String(value||"").replace(/\s+/g," ").trim();
+const runCenterNumber=value=>Math.max(0,parseInt(value)||0);
+function runCenterTotal(feature,state){
+  const value=typeof feature.total==="function"?feature.total(state):feature.total?state[feature.total]:null;
+  const total=runCenterNumber(value);
+  return total||null;
+}
+function runCenterProgress(feature,state){
+  if(typeof feature.progress==="function")return feature.progress(state);
+  const done=runCenterNumber(state[feature.done]);
+  const total=runCenterTotal(feature,state);
+  if(total)return `${done} / ${total}`;
+  return feature.unit?`${done}${t(feature.unit)}`:`${done}`;
+}
+function openRunCenterFeature(feature){
+  showTab(feature.tab);
+  if(feature.subTab&&typeof showGroupSub==="function")showGroupSub(feature.subTab);
+  const anchor=$(feature.anchor);
+  if(anchor)setTimeout(()=>anchor.scrollIntoView({behavior:"smooth",block:"center"}),0);
+}
+function renderRunCenter(state){
+  if(!runCenter||!runCenterList)return;
+  const running=RUN_CENTER_FEATURES.filter(feature=>!!state[feature.active]);
+  runCenter.classList.toggle("hidden",!running.length);
+  if(!running.length){runCenterList.replaceChildren();return;}
+  const fragment=document.createDocumentFragment();
+  running.forEach(feature=>{
+    const card=document.createElement("div");
+    card.className="run-card";
+    card.tabIndex=0;
+    card.setAttribute("role","button");
+    card.setAttribute("aria-label",t("rc.open",{name:t(feature.name)}));
+    const copy=document.createElement("div");
+    const title=document.createElement("div");title.className="run-card-title";
+    const name=document.createElement("span");name.textContent=t(feature.name);
+    const progress=document.createElement("span");progress.className="run-card-progress";progress.textContent=runCenterProgress(feature,state);
+    title.append(name,progress);
+    const status=document.createElement("div");status.className="run-card-status";status.textContent=runCenterText(state[feature.status])||t("rc.preparing");
+    status.title=status.textContent;
+    copy.append(title,status);
+    const stop=document.createElement("button");stop.type="button";stop.className="run-card-stop";stop.textContent=t("rc.stop");
+    stop.addEventListener("click",event=>{
+      event.stopPropagation();
+      const button=$(feature.stop);
+      if(button&&!button.disabled)button.click();
+    });
+    const open=()=>openRunCenterFeature(feature);
+    card.addEventListener("click",open);
+    card.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();open();}});
+    card.append(copy,stop);
+    fragment.appendChild(card);
+  });
+  runCenterList.replaceChildren(fragment);
+}
+let runCenterRefreshQueued=false;
+function refreshRunCenter(){
+  if(runCenterRefreshQueued)return;
+  runCenterRefreshQueued=true;
+  queueMicrotask(async()=>{
+    runCenterRefreshQueued=false;
+    try{renderRunCenter(await chrome.storage.local.get(RUN_CENTER_KEYS));}catch{}
+  });
+}
+chrome.storage.onChanged.addListener((changes,area)=>{
+  if(area!=="local"||!Object.keys(changes).some(key=>RUN_CENTER_KEYS.includes(key)))return;
+  refreshRunCenter();
+});
+refreshRunCenter();
+
 // Mở popup: tự về đúng panel của phiên đang chạy (ưu tiên Share > Nhóm >
 // Bản tin & AI > Cào bài > Kết bạn); không có phiên chạy thì mở lại tab
 // của lần trước. Popup không tự đóng — trạng thái cập nhật trực tiếp.
 (async()=>{
   try{
-    const r=await chrome.storage.local.get(["salesPostActive","trendLearnActive","trendPostActive","groupShareActive","groupPostActive","groupInteractActive","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","isAICommenting","isFeedInteracting","isScraping","isRunning","friendConfirmActive","popupLastTab"]);
+    const r=await chrome.storage.local.get(["salesPostActive","trendLearnActive","trendPostActive","groupShareActive","groupPostActive","groupInteractActive","groupCommentActive","isGroupJoining","isDiscoverJoining","pageGroupJoinActive","pageGroupPostActive","pageWatchActive","pageCommentActive","isAICommenting","isFeedInteracting","isScraping","isRunning","friendConfirmActive","friendFoFActive","friendFoFScanActive","popupLastTab"]);
     const panel=r.salesPostActive?"sales"
       :(r.trendLearnActive||r.trendPostActive)?"trend"
       :r.groupShareActive?"share"
-      :(r.pageGroupJoinActive||r.pageGroupPostActive||r.pageWatchActive||r.pageCommentActive)?"page"
-      :(r.groupPostActive||r.groupInteractActive||r.isGroupJoining||r.isDiscoverJoining)?"group"
+      :(r.groupPostActive||r.groupInteractActive||r.groupCommentActive||r.isGroupJoining||r.isDiscoverJoining)?"group"
       :(r.isAICommenting||r.isFeedInteracting)?"feed"
       :r.isScraping?"scrape"
-      :(r.isRunning||r.friendConfirmActive)?"add"
+      :(r.isRunning||r.friendConfirmActive||r.friendFoFActive||r.friendFoFScanActive)?"add"
       :(r.popupLastTab||"");
     if(panel)showTab(panel);
   }catch{}

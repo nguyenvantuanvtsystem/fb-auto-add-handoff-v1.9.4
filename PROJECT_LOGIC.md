@@ -1,10 +1,273 @@
 # FB Auto Tool — Logic handoff cho AI
 
+## v1.9.133 — Tự resume sau điều hướng của Facebook
+
+- Khi stream theo nguồn chuyển từ profile sang Friends hoặc Facebook đổi route bằng SPA, `friendFoFRunState` vẫn là write-ahead source of truth và một timer resume có owner-tab/run-ID guard tự gọi lại đúng loop; không cần mở popup bấm Start lần hai.
+- Timer bị hủy khi Stop/reset hoặc một run mới bắt đầu, retry ngắn nếu loop cũ còn thoát, và không resume khi active flag/run ID/owner tab không khớp. Hard reload vẫn dùng bootstrap resume hiện có.
+- Kiểm thử thêm trường hợp navigation resume; không gửi lời mời thật trong kiểm thử.
+
+## v1.9.132 — Kết bạn trực tiếp trong danh sách của nguồn
+
+- Chọn nguồn rồi Start; xử lý từng card và tải tiếp khi cần, bỏ bước quét toàn bộ nguồn/preview và mở từng profile.
+- History ghi trước click, không tự hết hạn/cắt bớt. Proof chỉ ở đúng card; nhãn Add Friend được kiểm tra ngay trước dispatch. Stop/Reset giữ history.
+- Kiểm thử mô phỏng chống click lại, card bên cạnh, rerender và Stop: node --test tests/fof-stream.test.cjs. Chưa gửi lời mời thật để kiểm thử bản này.
+
+## v1.9.131 — Quét hết các lô bạn bè Facebook đang expose
+
+- Sửa deadlock của `friend-of-friend`: Facebook mount spinner cuối danh sách trước khi tải lô tiếp theo, còn code cũ chỉ cuộn khi không thấy spinner nên dừng ở lô đầu sau bốn vòng không tăng.
+- Root resolver tách hai layout đang quan sát được: `/friends/list/` của nick hiện tại nằm trong pane `role=navigation`, còn Friends của profile nguồn nằm trong `role=main`. Own-list chỉ tìm heading/list trong navigation gần heading; source-list vẫn bị giới hạn trong main để không hút link profile ngoài ngữ cảnh.
+- Mỗi vòng nay re-find root/scroll container, luôn đưa neo profile cuối tới vùng nhìn thấy, rồi polling profile count, tail signature, `scrollHeight` và `scrollTop`. Không giữ node DOM qua thời gian chờ; Stop/run ID được đọc lại mỗi 500 ms.
+- Chỉ coi danh sách hoàn tất sau hai lượt độc lập cùng đạt đủ ba điều kiện: không có tiến triển DOM, không còn loading marker và scroll container đang ở đáy. Tối đa 320 lượt cuộn, 5.000 profile và 120 giây không tiến triển; chạm giới hạn phải báo `partial`, không giả là đã quét hết.
+
+## v1.9.130 — Kết bạn theo danh sách bạn của bạn nguồn
+
+- Popup thêm mode `friend-of-friend` với hai cách chọn nguồn: nhập link profile Facebook hoặc quét danh sách bạn bè của nick hiện tại rồi tìm theo tên để chọn một người bạn làm nguồn.
+- Luồng quét chỉ đọc những profile/link và mục Bạn bè mà Facebook đang hiển thị cho tài khoản hiện tại. Nó không cố mở danh sách bị ẩn, không dùng API riêng, không suy đoán rằng danh sách không tải được là danh sách rỗng.
+- Sau khi quét, ứng viên được dedupe theo `profileKey` và hiển thị preview trước khi người dùng bấm Bắt đầu gửi. Gửi tuần tự, chống trùng và chỉ tăng bộ đếm khi Facebook đưa ra proof trạng thái đã gửi/đã là bạn bè; proof mơ hồ ghi `uncertain` và không retry.
+- Scan và send có state, stop, run ID, counter, history và resume riêng; mode này chưa hỗ trợ hẹn lịch vì cần hoàn tất chuỗi chọn nguồn → quét → preview trước khi gửi.
+
+## v1.9.129 — Tạm ẩn giao diện Nuôi Page
+
+- Popup không còn tab/panel Nuôi Page, lựa chọn tạo lịch mới hoặc card Run Center của bốn luồng Page. `showTab("page")` cũ được chuyển an toàn về tab Kết bạn để `popupLastTab` cũ không tạo một panel trống.
+- Chỉ điểm vào giao diện được tạm dừng: `page.js`, state machine, cấu hình và dữ liệu Page còn nguyên để bật lại không cần migration/xóa dữ liệu.
+
+## v1.9.128 — Nuôi Page không bỏ qua hàng loạt khi actor không khả dụng
+
+- Resolver actor của Nuôi Page nhận diện picker Facebook kể cả khi root chỉ có `aria-modal`/profile marker, tải thêm Page rồi dùng ô tìm kiếm `Tìm kiếm trang cá nhân và Trang` khi Page chưa xuất hiện. Sau khi click Page, resolver mở lại picker và chỉ tiếp tục khi thấy marker Page đang được chọn; không coi nút `Chuyển sang...` hoặc chính cú click là proof.
+- Nếu không xác minh được Page trong hai lượt liên tiếp, luồng dừng an toàn với lý do Page không có trong bộ chọn danh tính thay vì tiếp tục tăng `pageGroupJoinSkipped` cho mọi nhóm. Bộ đếm, run ID và proof vẫn riêng của `pageGroupJoin*`.
+- Status lý do bỏ qua không còn bị `joinLoop` ghi đè ngay sau `processCard`; lời gọi AI trả lời câu hỏi mở có timeout 30 giây và vẫn polling Stop/run ID.
+
+## v1.9.127 — Xác minh menu actor sau click
+
+- Resolver Nuôi Page kiểm tra menu actor đã thật sự xuất hiện sau cú click. Nếu `trustedMouse` trả thành công nhưng Facebook không mở menu do header re-render, resolver thử một lần `element.click()` rồi mới tìm Page.
+- Không coi click nút actor là bằng chứng đã chuyển Page; vẫn phải tìm đúng Page và chờ `actorEvidence()` trước khi xử lý nhóm.
+
+## v1.9.126 — Không loại nhầm nút actor cố định
+
+- `page.js` kiểm tra visibility của nút actor bằng computed style và viewport rect, không dùng `offsetParent`; Facebook đặt nút `Trang cá nhân của bạn` ở dạng fixed nên `offsetParent` có thể là `null` dù nút vẫn hiển thị.
+- Chỉ sửa resolver hiển thị riêng của Nuôi Page; state machine, selector nhóm, counter và success proof vẫn tách biệt.
+
+## v1.9.125 — Nhận diện bằng chứng Page đang được chọn
+
+- `actorEvidence()` nhận thêm nhãn Facebook `đang chọn`/`selected` cùng tên Page. Sau khi chọn Page trong menu, resolver không còn bỏ qua đúng Page chỉ vì Facebook chưa dùng chữ `đang dùng`.
+
+## v1.9.124 — Tải thêm danh sách Page trong bộ chọn actor
+
+- Khi hộp danh tính Facebook đã mở nhưng Page đích chưa xuất hiện, resolver actor bấm `Xem thêm trang`/`See more pages` tối đa 8 lượt, sau mỗi lượt đợi danh sách mới rồi tìm lại Page. Chỉ chọn khi có đúng tên Page và vẫn giữ kiểm tra actor sau đó.
+
+## v1.9.123 — Mở danh sách đầy đủ khi Page không nằm trong chuyển nhanh
+
+- Resolver actor của Nuôi Page trước tiên thử Page đang hiển thị trong menu; nếu Page đã chọn không có trong nhóm chuyển nhanh, nó bấm `Xem tất cả trang cá nhân`/`See all profiles`, đợi danh sách mới và chọn đúng Page. Join/Post/Watch/Comment vẫn dùng state machine và proof riêng của từng luồng.
+
+## v1.9.122 — Nhận diện nút chuyển danh tính Page hiện tại
+
+- Hai resolver actor của Nuôi Page nhận diện thêm nhãn Facebook `Trang cá nhân của bạn`/`Your profile` và `Your account`, rồi chọn Page đã cấu hình trong menu. State machine, selector nhóm, counter và success proof riêng của Page không bị ghép với luồng cá nhân.
+
+## v1.9.121 — Sửa khóa dịch trạng thái Nuôi Page
+
+- `popup.js` dùng `pg.busy` (khóa đã có trong từ điển Việt/Anh) khi đổi nút Page tham gia nhóm sang trạng thái đang chạy; không còn hiện nguyên chuỗi `p.pgBusy` trong popup. State machine Page, selector, counter và proof không thay đổi.
+
+## v1.9.120 — Kết bạn theo Gợi ý giữ thứ tự DOM
+
+- `collectCandidates()` của luồng Kết bạn theo Gợi ý giữ thứ tự `querySelectorAll()` từ root danh sách Facebook và chỉ dedupe theo profile key; không còn sort bằng `getBoundingClientRect().top/left`, vốn có thể đảo thứ tự khi Facebook re-render hoặc khi scroll.
+- Chỉ các thẻ còn nút `Thêm bạn bè`/`Add friend` mới là candidate; thẻ đã hiện `Đã gửi lời mời` vẫn được bỏ qua đúng chủ ý vì không thể gửi lại. Group-common và Xác nhận lời mời không dùng cơ chế xếp hàng này.
+
+## v1.9.119 — Hẹn lịch ngay trong từng feature
+
+- Các panel Kết bạn, Cào bài, Feed/Comment AI, tương tác nhóm, Đăng bài nhóm, Share, Đăng bán, Học/Đăng Trend và bốn luồng Page đều có ô ngày/giờ cùng nút `📅 Hẹn lịch cấu hình này` ngay cạnh nút Start.
+- Mỗi nút chỉ gọi `createFeatureSchedule()` với feature binding riêng; hàm này dùng lại `scheduleSnapshot()` hiện có nên chụp đúng cấu hình đang hiển thị, giữ lịch one-shot và không tạo state machine/selector/counter/proof dùng chung.
+- Hai luồng tham gia nhóm theo từ khóa và Khám phá giữ nguyên control inline cũ; tổng cộng popup có đủ 17 feature schedule bindings, còn tab `Lịch chạy` vẫn là nơi xem/hủy/xóa tất cả lịch.
+
+## v1.9.118 — Hiển thị nhanh tab lịch
+
+- Popup có nút `📅 Lịch chạy` cố định ở phần đầu giao diện, trỏ vào đúng panel lịch trung tâm. Đây chỉ là thay đổi điểm vào UI; adapter, route, active flag, counter và success proof của từng feature không đổi.
+
+## v1.9.117 — Adapter lịch cho toàn bộ feature
+
+- Tab `Lịch chạy` nay có adapter riêng cho mọi luồng còn lại: Kết bạn (đúng mode đang chọn), Cào bài, Feed, Comment AI Bản tin, Like/Random nhóm, Comment AI nhóm, Đăng bài nhóm, Share, Đăng bán, Học/Đăng Trend và bốn luồng Page. Mỗi adapter giữ route, active flag, run config, message Start và bộ đếm của chính feature đó; không tạo state machine Facebook dùng chung.
+- Snapshot lịch chỉ giữ cấu hình cần thiết, danh sách nhóm/Page đã chọn, link nguồn và nội dung người dùng đã nhập; không giữ API key. Khi alarm chạy, background đọc lại unified AI config từ `chrome.storage.sync`, rồi đưa cấu hình runtime vào đúng feature.
+- Các feature tự động khôi phục sau navigation/reload bằng state đã persist trước khi đổi route. Share dùng message `resumeGroupShare` hiện có; các luồng khác gọi đúng message `start...` hiện có. Lịch chỉ được ghi `started` sau khi URL đúng, message đã được giao và active flag của feature còn bật.
+- Cào bài khi ô nguồn trống sẽ chụp URL Facebook của tab hiện tại tại thời điểm tạo lịch. Trend Post chụp các bài đã chọn và tạo job nguồn cho từng nhóm; AI vẫn được gọi lúc phiên thực sự bắt đầu, không gọi trước giờ lịch. Media của Đăng bán chỉ chụp manifest/kế hoạch, còn file vẫn lấy từ kho media hiện có và được kiểm tra khớp.
+
+## v1.9.116 — Giữ thời gian chờ trong snapshot lịch
+
+- `normalizeScheduledTask()` nay giữ và chuẩn hóa `confirmWaitSeconds` trong snapshot của cả lịch theo từ khóa lẫn Khám phá (5–600 giây, mặc định 90), để background không làm rơi giá trị người dùng đã chọn trước khi alarm chạy.
+- Các lịch vẫn là one-shot độc lập: hoàn tất/lỗi của lịch A không kích hoạt lịch B; lịch B chỉ chạy đúng `runAt` riêng. Nếu đến `runAt` khi bất kỳ state machine nào còn active, lịch B chuyển `blocked` để tránh chồng thao tác, không tự xếp hàng chạy muộn.
+
+## v1.9.115 — Cấu hình thời gian chờ Facebook xác nhận tham gia
+
+- Hai luồng tham gia nhóm (theo từ khóa và Khám phá) có ô `Thời gian chờ Facebook xác nhận (giây)`, mặc định 90 giây, giới hạn an toàn 5–600 giây. Giá trị được lưu trong `chrome.storage.sync` và chụp vào `groupJoinRunConfig`/`discoverRunConfig` cùng lịch nếu người dùng tạo lịch.
+- `waitForJoinConfirmation` dùng đúng thời gian của snapshot phiên hiện tại; vẫn chỉ click Join một lần, polling cờ Stop/run ID và chỉ tăng bộ đếm sau success proof của Facebook. Phiên/cấu hình cũ không có trường mới tiếp tục dùng 90 giây.
+
+## v1.9.114 — Không làm rơi lịch đúng lúc service worker thức dậy
+
+- `restoreScheduleAlarms()` dành cửa sổ 15 giây cho lịch vừa đến hạn khi service worker khởi động/reload. Trong cửa sổ này, alarm được dựng lại sau 1 giây để tránh race với `alarms.onAlarm`; lịch quá hạn hơn cửa sổ đó vẫn chuyển sang `failed` và không tự chạy muộn.
+- Mốc thời gian không hợp lệ được ghi lỗi riêng; trạng thái lịch vẫn là nguồn audit và không làm thay đổi state machine của tính năng tham gia nhóm.
+
+## v1.9.113 — Khôi phục alarm lịch chạy
+
+- `scheduledTasks` là nguồn sự thật bền vững. Mỗi lần background worker nạp, Chrome khởi động hoặc extension được reload, mọi lịch `scheduled` còn ở tương lai được xóa alarm cũ cùng tên rồi tạo lại đúng `runAt`.
+- Lịch đã qua `runAt` trong lúc extension không hoạt động được chuyển sang `failed` với lý do rõ ràng, không được giữ “Đang chờ” và cũng không tự chạy muộn một hành động Facebook.
+
+## v1.9.112 — Alarm chờ content script thật sự sẵn sàng
+
+- `tabs.onUpdated: complete` không bảo đảm content script Facebook đã nhận message sau cold load. Scheduler retry **chỉ** khi Start message chưa được giao (`null`), dừng ngay ở response đầu tiên để không retry action đã nhận. Sau đó polling `getDiscoverStatus`/`getGroupStatus` tối đa 9 giây vì owner-tab resume có thể cần hơn 1,2 giây.
+- Nếu adapter không giữ được active flag, scheduler dọn cờ do nó tạo và ghi status lỗi vào đúng feature. Không để popup giữ status “Đã dừng” của phiên cũ, khiến người dùng tưởng alarm đã chạy thành công.
+
+## v1.9.111 — Bộ đếm chờ proof không bị kẹt
+
+- `waitForJoinConfirmation` polling mỗi 700ms nhưng status phải lấy bucket 5 giây đã qua, không so sánh `elapsed % 5 === 0`. Nếu so sánh mốc chính xác, UI có thể đứng ở 30/90 dù luồng thật vẫn chờ. Status mới lần lượt đi 0, 5, 10…90 và vẫn không liên quan đến success proof/counter.
+
+## v1.9.110 — Status chờ proof không khẳng định sai
+
+- Status trong 90 giây chờ phải ghi “Đã bấm Tham gia”, không ghi “Đã gửi yêu cầu” trước khi card/dialog Facebook có proof. Đây là trạng thái thao tác, không phải success proof và không được làm tăng counter.
+
+## v1.9.109 — Chờ request tham gia và hộp câu hỏi đến muộn
+
+- Sau đúng một cú click Join/Send, `waitForJoinConfirmation` giữ card tối đa 90 giây, báo elapsed mỗi 5 giây và không được bấm lại control cũ. Counter chỉ tăng khi Facebook hiện proof như Joined/Request sent/Review hoặc card biến mất theo đúng URL nhóm.
+- Hộp câu hỏi có thể xuất hiện sau lượt chờ dialog ban đầu. Trong cửa sổ proof, dialog đến muộn được đưa qua `autoAnswerGroupQuestions` đúng một lần: checkbox/rule phải được Facebook nhận, mọi câu hỏi mở mới gọi AI theo thứ tự, chỉ khi đủ câu trả lời mới gửi. Không có fallback click Join khi AI/câu trả lời không đủ.
+
+## v1.9.108 — Lịch chạy tập trung (đợt nền tảng)
+
+- `scheduledTasks` là kho UI của lịch; mỗi item có `id`, `feature`, `runAt`, snapshot `config`, `status`, và không dùng làm state machine Facebook. Alarm có prefix `fb-auto-schedule:`.
+- Background chỉ điều phối: trước khi chạy đọc toàn bộ cờ active; nếu có cờ true, đổi lịch thành `blocked`, tuyệt đối không dừng hoặc thay state của feature đang chạy. Nếu rảnh, adapter feature mở route, persist đúng `*RunConfig`/active flag rồi gửi đúng message Start cho content script. Lỗi khởi động phải xóa active flag do scheduler vừa tạo.
+- Đây là nền tảng adapter ban đầu cho `discover` (`startDiscoverJoin`) và `keyword` (`startGroupJoin`); từ v1.9.117 select chỉ đưa thêm feature khi đã có snapshot/routing/state/Start riêng như mô tả ở trên, không gắn một generic Start vào các feature đăng/comment/share.
+- Lịch là one-shot. Hủy chỉ clear đúng alarm và cập nhật item lịch; xóa chỉ xóa item đó. Lịch `started`, `blocked`, `failed`, `cancelled` được giữ lại để người dùng audit.
+- Với `discover`/`keyword`, ô ngày giờ và nút `Hẹn lịch cấu hình này` nằm ngay trong feature panel. UI trung tâm cũng có thể tạo lịch nhưng chỉ là điểm quản lý; cả hai đường dùng cùng `createFeatureSchedule`/`scheduleSnapshot`, nên snapshot gồm đúng số lượng, delay, câu trả lời và AI-toggle đang thấy ở feature.
+- Khi alarm chạy, scheduler bắt buộc theo thứ tự: lấy `ownerTabId` → persist active flag/run config → đăng ký listener `tabs.onUpdated` → điều hướng Facebook → gửi Start và chờ response. Không được điều hướng trước persist (content script có thể tải quá nhanh và không resume), cũng không được ghi `started` nếu `sendMessage` không tới content script.
+- `startDiscoverJoin` phải bật cả `isDiscoverJoining` nội bộ lẫn cờ storage trước `discoverLoop(false)`. Storage chỉ phục vụ resume/reload; vòng lặp trong document hiện tại dùng cờ nội bộ. Thiếu cờ này tạo false-success: scheduler đã điều hướng và trả Started, nhưng loop thoát ngay không click card nào.
+- Scheduler không được coi response Start là success proof. Sau điều hướng phải xác minh URL thật đúng route, gửi Start và kiểm tra active flag riêng của feature; chỉ khi message đã giao và state machine còn active mới đổi lịch sang `started`. Nếu tab không nhận lệnh, sai route hoặc state machine không giữ được cờ nội bộ, lịch phải `failed` và bỏ active flag scheduler vừa tạo.
+- Khám phá không được chốt `outOfGroups` sau vài nhịp DOM rỗng: Facebook có thể render heading trước card 15–30 giây sau navigation/alarm. `discoverLoop` chờ tối đa 18 lượt × 2,5 giây, status `dj.waitCards`, cuộn nhẹ mỗi lượt và chỉ kết luận hết nhóm khi hết cửa sổ này.
+
+## v1.9.107 — Tham gia nhóm theo Khám phá đúng vùng card
+
+- `extractDiscoverCards` chỉ quét controls trong ancestor gần nhất của heading “Gợi ý khác” có nút Tham gia; tuyệt đối không lấy card tại khu “Nhóm của bạn bè” hoặc phần nhóm khác trên `/groups/discover`.
+- Card được tìm từ nút lên ancestor nhỏ nhất có link nhóm và dòng thành viên, giúp `waitForJoinConfirmation` re-find đúng card khi Facebook rerender. Sau cả lượt có proof lẫn không có proof, `waitDiscoverDelay` hiển thị countdown `discoverStatus` và polling cờ Stop mỗi 500 ms trước khi thử card kế tiếp.
+
+## v1.9.106 — Trung tâm tiến trình popup
+
+- Popup có `runCenter` sticky ở đầu, chỉ render các feature đang active. Đây là observer UI: đọc các cờ/progress/status riêng (`isRunning`, `groupPostActive`, `trendPostActive`, `page*Active`...); không ghi/chia sẻ state machine, selector hoặc proof giữa các feature.
+- Mỗi card hiển thị tên, bộ đếm và status hiện tại; bấm card mở đúng tab/sub-tab và cuộn đến status gốc. Nút Dừng gọi `click()` đúng Stop button đã có của feature, nhờ đó vẫn dùng broadcast, run ID và cleanup dừng riêng hiện hữu. Không có Stop-all hoặc trạng thái dashboard riêng.
+
+## v1.9.105 — đếm ngược và audit AI cho Tham gia nhóm
+
+- `waitJoinDelay` hiển thị số giây còn lại trong `groupStatus`, polling cờ Stop mỗi 500 ms; dùng sau cả lượt có proof và không có proof. `groupAiUsage` là trạng thái nhìn thấy trong popup: ghi AI đang viết/đã đủ/thiếu câu trả lời theo tên nhóm, hoặc phân biệt nhóm chỉ có câu nội quy và AI đang tắt. Không lưu câu hỏi/câu trả lời/API key trong trạng thái audit.
+
+## v1.9.104 — card đúng cho Tham gia nhóm theo từ khóa
+
+- `group.js` chỉ chọn `button/[role=button]/a[role=button]` Join nằm trong đúng card nhóm, không chọn span hay control lân cận. Tên nhóm lấy từ link tiêu đề cùng canonical group URL, tránh đưa URL/avatar vào status hoặc AI trả lời câu hỏi. Lượt click không có proof vẫn ngủ theo `minDelay/maxDelay` trước nhóm sau.
+
+## v1.9.103 — proof và bộ đếm Xác nhận lời mời
+
+- Facebook có thể tháo node nút `Xác nhận` và render lại thẻ thành “Đã chấp nhận lời mời kết bạn”. `attemptConfirmCandidate` không đọc node cũ nữa: nó tìm lại thẻ theo profile key, chấp nhận proof chỉ khi chính thẻ đó đổi trạng thái hoặc Facebook phát sinh live message mới, rồi mới tăng `friendConfirmAccepted`.
+
+## v1.9.102 — Xác nhận lời mời tối giản
+
+- Chỉ còn `confirmFilters.minMutual` cùng khoảng giãn cách chung và giới hạn số lượt. Không còn UI/config/logic cho nhóm chung, quê quán, trường học, ảnh đại diện hoặc dữ liệu thiếu; state machine không mở profile để kiểm tra thêm. Ngưỡng `0` xác nhận mọi card có nút Xác nhận hợp lệ; khi ngưỡng lớn hơn `0`, card không hiển thị số bạn chung hoặc chưa đủ ngưỡng bị bỏ qua.
+
+## v1.9.101 — resume an toàn cho Xác nhận lời mời
+
+- Trang Lời mời có thể resume trong khoảng popup đã persist config tạm `confirmFilters` nhưng chưa gửi Start để content script chuẩn hóa thành `filters`. `normalizeConfirmConfig` nhận cả hai dạng; `friendConfirmLoop` chuẩn hóa state trước khi đọc bộ lọc, nên không còn lỗi `Cannot read properties of undefined (reading 'hometown')`. `finally` cũng tự handoff sang run ID đang active mới khi vòng resume cũ nhả lock.
+
+## v1.9.100 — bàn giao vòng Kết bạn sau chuyển trang
+
+- Phiên bản hiện tại: **v1.9.100**.
+- Kết bạn theo Gợi ý persist run trước điều hướng nên resume trang tải và lệnh Start mới có thể chồng nhau. `friendLoop` nay đọc run đang active trong `finally` và tự khởi động run ID mới sau khi vòng cũ nhả `loopActive`; trang đã có thẻ Gợi ý sẽ không mắc kẹt ở “Đang chuẩn bị nguồn”.
+
+## v1.9.99 — không lấy lịch sử cũ làm điều kiện bỏ qua
+
+- Phiên bản hiện tại: **v1.9.99**.
+- Comment AI nhóm xử lý các bài đang hiển thị của từng lượt Start mới, không khóa chúng chỉ vì key còn trong `groupCommentHistory` của phiên trước. Chỉ `groupCommentSubmissionGuard` cùng run ID chống submit lại sau reload, và comment thật của chính tài khoản đang hiển thị mới là lý do bỏ qua trực tiếp.
+
+## v1.9.98 — quay lại nhóm sau proof comment trong permalink
+
+- Phiên bản hiện tại: **v1.9.98**.
+- Sau khi Facebook xác nhận comment AI nhóm trong dialog/permalink, state machine persist counter/history rồi trở về route gốc của nhóm trước khi chọn bài kế tiếp. Không quét tiếp trên permalink, nơi Facebook giữ card nền và gán cùng URL cho nhiều card, gây chọn sai editor hoặc nhiều lỗi “không thấy ô nhập”.
+
+## v1.9.97 — khóa composer vào cửa sổ nổi permalink
+
+- Phiên bản hiện tại: **v1.9.97**.
+- Khi Facebook mở bài nhóm trong lớp `role="dialog"` đồng thời vẫn giữ card feed phía sau, Comment AI nhóm ưu tiên tuyệt đối composer nằm trong dialog. Route permalink không còn là điểm cộng cho composer card nền. Điều này ngăn lỗi nhìn thấy ô comment của bài nổi trống nhưng AI lại gõ vào ô cùng permalink ở nền, đồng thời giữ cleanup/proof trong scope dialog đó.
+
+## v1.9.96 — chọn đúng composer mới sau cú click
+
+- Phiên bản hiện tại: **v1.9.96**.
+- Comment AI nhóm ưu tiên ô comment mới được Facebook mount sau cú click và kiểm tra nó thuộc đúng bài/permalink. Composer cũ đã tồn tại trước cú click chỉ là fallback sau khi chờ; khi editor vừa mở còn rỗng, resolver giữ chính node đó trong lúc Facebook re-render để tránh hiện tượng ô phía trên không có chữ còn nội dung đi xuống ô khác.
+
+## v1.9.95 — không bỏ nhầm bài thường do marker quảng cáo cũ
+
+- Phiên bản hiện tại: **v1.9.95**.
+- Riêng Comment AI nhóm, `data-ad-preview="message"` không còn là lý do bỏ qua vì Facebook cũng gắn marker này trên bài thường. Chỉ loại quảng cáo có dấu hiệu rõ ràng (link/nhãn/quảng cáo Comet); bài cấp cao còn nút Bình luận chính vẫn được đưa vào AI.
+
+## v1.9.94 — chờ feed nhóm tải trước khi comment
+
+- Phiên bản hiện tại: **v1.9.94**.
+- Sau khi mở nhóm, Comment AI chờ feed ổn định 6 giây; nếu chưa có bài thì tiếp tục polling tối đa 18 vòng, mỗi vòng 2,5 giây, và ghi trạng thái chờ rõ ràng. Không kết thúc 0 bài chỉ vì route đã mở nhưng Facebook còn đang dựng skeleton.
+
+## v1.9.93 — comment mọi bài đăng nhìn thấy
+
+- Phiên bản tại thời điểm phát hành: **v1.9.93**.
+- Comment AI nhóm không còn loại bài chỉ vì phần chữ trích xuất ngắn hoặc vì câu AI gần giống comment khác; bài có nút Bình luận chính sẽ được đưa vào AI theo text/alt text/ngữ cảnh dự phòng của chính bài.
+- Nếu Facebook chuyển sang permalink hoặc composer chưa dựng kịp, bài không bị đánh dấu đã xử lý ngay: luồng xóa khóa tạm và thử lại tối đa 3 lần. Chỉ loại nội dung không phải bài đăng cấp cao (reply/comment con, Messenger, quảng cáo, Reel/Watch); vẫn chỉ tăng bộ đếm sau proof comment thật.
+
+## v1.9.92 — dọn orphan composer sau khi Facebook đổi permalink
+
+- Phiên bản hiện tại: **v1.9.92**.
+- v1.9.92: Sau khi Comment AI nhóm gửi thành công, Facebook có thể giữ một composer nổi của bài trước rồi đổi URL sang permalink bài kế tiếp. Luồng ghi nhớ ngắn hạn các đoạn text được tạo từ ô ban đầu rỗng do chính AI sở hữu, quét/dọn cả orphan composer khớp đoạn text trước khi gõ, chuyển bài hoặc dừng; không xóa bản nháp không khớp nội dung AI. Reset/Stop dọn xong mới xóa bộ nhớ ownership.
+
+## v1.9.91 — fallback scope permalink cho composer không có role dialog
+
+- Phiên bản hiện tại: **v1.9.92**.
+- v1.9.91: Facebook có layout lớp bài viết không có `role="dialog"`, khiến replacement sau khi gửi mất ancestor để nhận diện. Khi ownership memory còn hiệu lực và URL đang là permalink/post của nhóm, cleanup dùng permalink làm scope fallback; vẫn không chạm bản nháp ngoài lượt AI.
+
+## v1.9.90 — dọn replacement theo permalink sau khi Comment AI nhóm gửi
+
+- Phiên bản hiện tại: **v1.9.90**.
+- v1.9.90: Sau proof comment đã hiển thị, Facebook có thể tạo lại composer ở trang permalink và làm mất scope/identity DOM cũ. Cleanup nay nhận diện fragment đúng text theo permalink của đúng bài; chỉ khi composer thực sự sạch mới đóng overlay hoặc chuyển tiếp, tránh cảnh báo “Rời khỏi trang?” sau comment thành công.
+
+## v1.9.89 — ổn định editor trước khi Comment AI nhóm gõ
+
+- Sau khi mở ô bình luận, Comment AI nhóm chờ editor Facebook ổn định, tìm replacement đúng bài nếu Facebook vừa re-render, focus lại và xác nhận ô vẫn rỗng trước khi gửi nội dung.
+- Mục tiêu là tránh hụt các code-point đầu câu do editor bị thay node ngay thời điểm bắt đầu gõ; cơ chế xác nhận đủ nội dung và dọn bản nháp vẫn giữ nguyên.
+
 Tài liệu này là bản mô tả hành vi cần giữ khi bảo trì dự án. AI tiếp quản phải đọc tài liệu này cùng `README.md` trước khi sửa code. Mỗi tính năng có state, nguồn dữ liệu và điều kiện thành công riêng; không dùng chung một bộ selector hoặc một cách xác nhận cho tất cả tính năng.
 
 ## Phiên bản và nguyên tắc chung
 
-- Phiên bản hiện tại: **v1.9.58** (v1.6.3 là phiên bản đã test Comment AI 20/20).
+- Phiên bản hiện tại: **v1.9.125** (v1.6.3 là phiên bản đã test Comment AI 20/20).
+- v1.9.95: Comment AI nhóm bỏ qua marker `data-ad-preview="message"` khi marker đứng một mình; chỉ giữ dấu hiệu quảng cáo rõ ràng.
+- v1.9.94: Sau khi chuyển nhóm, chờ feed render 6 giây rồi polling tối đa 18 vòng x 2,5 giây; tránh báo hoàn tất 0 bài trên mạng chậm.
+- v1.9.93: Comment AI nhóm quét mọi bài cấp cao có nút Bình luận, không bỏ qua caption ngắn/trùng ý comment khác; retry lạc permalink/ô nhập tối đa 3 lần và dùng alt text/ngữ cảnh dự phòng cho bài ảnh.
+- v1.9.92: Comment AI nhóm dọn trước orphan composer của các lượt AI trước ngay trước khi mở bài mới; ownership history ngắn hạn ngăn cảnh báo rời trang khi Facebook giữ composer cũ sau khi đổi permalink.
+- v1.9.89: Comment AI nhóm chờ editor ổn định sau khi mở, ưu tiên replacement cùng bài, focus lại và kiểm tra ô vẫn rỗng trước khi bắt đầu gõ để giảm lỗi hụt phần đầu câu do Facebook re-render.
+- v1.9.88: Comment AI nhóm lưu thêm đúng `[role="dialog"]` đã chứa composer được lượt chạy sở hữu. Khi Facebook thay editor sau khi gửi và làm node replacement mất identity/signature tạm thời, chỉ replacement cùng dialog đó mới được nhận để dọn draft; không đụng ô nhập của bài/dialog khác.
+- v1.9.87: `isReplyCommentBox` chỉ loại composer reply con khi nhãn có đích trả lời rõ ràng (`Trả lời với vai trò`, `Trả lời cho`, `Reply as/to`, `Responding to`). Nhãn composer chính Facebook dùng trên permalink là `Trả lời dưới tên`, nên phải được chấp nhận; các khâu dọn draft vẫn quét mọi composer để bảo vệ cảnh báo rời trang.
+- v1.9.86: `callGemini` dùng endpoint API-key `v1beta/models/{model}:generateContent` và đọc `candidates[].content.parts[].text`; không dùng Interactions endpoint vì endpoint đó yêu cầu OAuth và gây 401 `UNAUTHENTICATED` với key Google AI Studio. Áp dụng chung cho Comment AI nhóm, Comment AI Bản tin, đăng nhóm và các luồng AI khác.
+- v1.9.85: helper `isReplyCommentBox` (nhãn chứa “trả lời”/“reply”) loại ô reply khỏi `findCommentBox`, nhánh overlay của `findExactCommentBox` và `findCommentBoxOpenedByClick`; `visibleCommentBoxes`/dọn draft giữ nguyên để vẫn dọn được bản nháp cũ trong ô reply và vẫn chặn điều hướng khi còn draft. Kiểm thử headless (`gi-web` fixture + `gi-feed-test.mjs`): 11/11 pass — gõ đúng ô chính khi ô reply đứng trước trong DOM, guard trùng chặn câu nhại comment có sẵn, overlay mở không gây comment đôi, không có page error.
+- v1.9.84: Comment AI nhóm có guard trùng nội dung (`groupCommentDuplicatesExisting`/`existingGroupCommentTexts`): câu AI ≥25 ký tự đã xuất hiện trong comment hiện tại, hoặc ôm trọn comment dài ≥30 ký tự, thì bỏ qua với lý do `duplicate` (khóa bài như `own`) thay vì đăng chồng. `extractPostText` loại comment con lồng (`div[role=article]` có dấu hiệu Trả lời, không có nút Bình luận chính) ở nhánh fallback `div[dir=auto]`, giữ nguyên nhánh msgDiv/bgDiv chính xác. `findGroupCommentPosts` dedup theo `postIdentity` ngay khi quét để card feed + overlay “Bài viết” của cùng bài không thành hai mục xử lý.
+- v1.9.83: 💬 Tương tác nhóm có hai nút Reset riêng (`groupInteractResetBtn`/`groupCommentResetBtn` → `resetGroupInteract`/`resetGroupComment`). Popup ghi cờ dừng + zero bộ đếm trực tiếp vào storage (có tác dụng cả khi tab không reachable), content script dừng vòng lặp, xóa highlight `data-feed-interacted`, dọn draft AI và zero guard/tiến trình (`ReactionGuard`/`SubmissionGuard`/`ProcessedKeys`/`Skipped`). Giữ `groupInteractReactedKeys`/`groupCommentHistory` chống trùng như Reset Comment AI Bản tin.
+- v1.9.82: Mọi lần đổi nhóm của Tương tác nhóm/Comment AI (`mở nhóm`, `quay lại nhóm`, `sang nhóm kế tiếp`) đi qua `safeGroupNavigate`/`prepareGroupCommentTransition`: dọn draft do AI sở hữu (`cleanupGroupCommentDraft`), đóng overlay, rồi xác minh không còn `commentDraftText` và không có cảnh báo rời trang trước khi gán `location.href`. Nếu Facebook vẫn giữ draft, phiên dừng tại chỗ với `gi2.transitionBlocked` thay vì bật đồng thời cảnh báo native “Rời khỏi trang web?” của Chrome và hộp thoại “Rời khỏi trang? Bạn chưa hoàn tất bình luận” của Facebook. Các nhánh `stopped` sau khi sở hữu composer (trước gửi, sau guard, trong lúc chờ proof) cũng dọn draft/đóng overlay trước khi trả về.
+- v1.9.81: Sau proof gửi Comment AI nhóm, cleanup không đóng ngay khi composer đầu tiên rỗng. Nó giữ identity/signature của bài và đợi qua các nhịp ổn định để bắt composer phụ mà Facebook mount muộn với phần đuôi của câu AI; chỉ sau khi composer này đã được nhận diện đúng bài và dọn sạch mới đóng overlay/chuyển tiếp. Không đụng draft có sẵn của người dùng.
+- v1.9.80: Comment AI nhóm không còn chốt sớm khi Facebook đang tải lô bài tiếp theo. Sau mỗi vòng không có comment mới, nó cuộn và chờ tải tối đa sáu vòng có giới hạn (2,5 giây/vòng) trước khi kết luận feed không có thêm ứng viên; vì vậy cấu hình 5 bài vẫn có thời gian nhận bài thứ ba trở đi trên mạng chậm, nhưng DOM bất động vẫn không thể chạy vô hạn.
+- v1.9.79: Comment AI giữ nhịp gõ chậm kiểu người thật và chỉ gửi sau khi xác nhận đủ nội dung. Nếu Facebook thay composer giữa lúc gõ làm lần đầu bị hụt, luồng dọn draft AI đã sở hữu rồi thử nhập lại một lần trên composer mới của chính bài. Sau khi gửi, luồng cũng tìm và dọn composer phụ của đúng bài trong lớp chi tiết, kể cả khi Facebook chỉ để lại một phần đầu/đuôi câu, rồi đóng lớp phủ trước khi chuyển bài; draft có sẵn của người dùng vẫn được bỏ qua.
+- v1.9.77: Comment AI ghi nhớ câu đang nhập sau khi xác nhận ô ban đầu rỗng. Nếu Facebook đổi permalink/DOM và mất identity cũ, luồng vẫn nhận diện bản nháp AI theo tiền tố của đúng câu đang gõ để dọn phần nhập hụt; nếu ô đã có draft thì bỏ qua, không xóa draft người dùng.
+- v1.9.74: Comment AI theo nhóm có state riêng cho composer do AI sở hữu; sau khi Facebook xác nhận comment, luồng dọn lại composer theo đúng identity bài viết trước khi đóng overlay/đổi bài, tránh bản nháp sót và cảnh báo “Rời khỏi Trang”.
+- v1.9.73: Comment AI vẫn giữ nhịp gõ ngẫu nhiên 45–105ms mỗi code-point (cộng nghỉ sau dấu câu/khoảng trắng), nhưng gửi các cụm 2 code-point để giảm việc Facebook thay composer giữa chừng. Khi nhập hụt, luồng thử dọn cả composer replacement trước khi đổi bài/nhóm, tránh để lại bản nháp và cảnh báo rời trang.
+- v1.9.72: Comment AI dùng `trustedInput` theo từng code-point với khoảng nghỉ ngẫu nhiên 45–105ms, cộng thêm nhịp nghỉ sau khoảng trắng/dấu câu để thao tác tự nhiên hơn. Bộ gõ nhận `abortStorageKey` và `abortRunIdKey`, kiểm tra Stop/run ID trong lúc nhập; sau đó vẫn phải xác nhận đủ nội dung trong đúng editor trước khi gửi.
+- v1.9.71: Comment AI (cả `groupComment*` và Comment AI Bản tin) dùng một lần nhập nguyên khối rồi chờ xác nhận toàn bộ nội dung đã nằm trong đúng `contenteditable` trước khi gửi. Nếu Facebook thay DOM làm nội dung chỉ nhập được một phần, luồng không bấm Gửi, dọn phần nhập do tiện ích sở hữu và ghi rõ lý do `typeincomplete`; nếu editor đã có bản nháp thì bỏ qua an toàn (`draft`) thay vì ghi đè. Điều này ngăn lỗi đã tái hiện khi Facebook mở lớp chi tiết và tạo bình luận chỉ còn “Chuẩ”.
+- v1.9.70: Tương tác nhóm đã tham gia tách thành hai state machine riêng. Like/Random dùng `groupInteract*` và chỉ xử lý proof cảm xúc; Comment AI dùng `groupComment*`, có history/processed keys/submission guard/skip reasons/counter riêng và chỉ xử lý comment. Popup có hai nút Start/Stop độc lập, nhưng chặn chạy đồng thời trên cùng tab để không tranh DOM nhóm. State cũ `groupInteractConfig.aiComment` bị bỏ qua, không còn tự ghép hai hành động.
+- Bản sửa sau v1.9.70: Comment AI nhóm dùng đúng cờ chạy `groupComment*`, tìm bài độc lập với danh sách nút Like, và chỉ tăng bộ đếm sau khi tìm thấy chính nội dung comment trong bài hoặc lớp chi tiết nhóm. Các lượt chỉ bỏ qua bài/không có proof không còn quét vô hạn: sau hai vòng không có tiến triển, nhóm được chốt với lý do bỏ qua và phiên chuyển tiếp/dừng an toàn. Like/Random cũng có guard không-tiến-triển sau ba vòng DOM chỉ còn nút đã xử lý, tránh kẹt vô hạn ở `3/5`. Test trình duyệt đã xác nhận Like/Random đạt `5/5`; Comment AI chưa thể chạy tiếp vì một luồng Share bài khác đang active và được chặn đúng để không tranh DOM.
+- v1.9.69: Comment AI chặn điều hướng/reload khi còn draft hoặc hộp thoại rời trang, kể cả khi node draft sở hữu đã mất. `returnToMainFeedViaHistory` chỉ back một lần, kiểm tra stop và cảnh báo mỗi 250ms. Fallback dùng `navigateAIToMainFeed` kiểm tra lại trước điều hướng, persist owner/config, chỉ dispatch một lần; không bỏ qua lỗi cleanup để gọi location trực tiếp. Không tự xóa draft không thuộc phiên.
+- Kiểm thử v1.9.69: bắt được phiên cũ kẹt 29/300 với cảnh báo rời trang và draft còn chữ; dừng phiên, giữ draft cũ. Sau reload extension, chạy trên tab Bản tin mới đạt 2/2 theo trạng thái xác minh của tiện ích, không gặp lại cảnh báo trong lượt ngắn. Kiểm thử mô phỏng đạt các nhánh draft, cleanup thất bại, cảnh báo, Stop, owner tab và chỉ điều hướng/back một lần. Chưa xác minh độ ổn định cho toàn bộ 300 bài.
+- v1.9.68: Khi bật nền màu, AI được yêu cầu bổ sung ý liên quan nếu bài ngắn hơn khoảng mục tiêu 115–130 ký tự, ưu tiên viết gần 130 nhưng không kéo dài vô nghĩa. Chỉ khi vẫn vượt 130 sau các lượt nén, B2 mới chuyển bài đó sang đăng chữ thường.
+- v1.9.67: B2 và Đăng bài nhóm giới hạn nền màu ở 130 ký tự theo giới hạn thực tế của Facebook. Khi bật nền, prompt ưu tiên AI viết gần cận trên 130 ký tự nhưng vẫn đủ nghĩa; nếu bài B2 vẫn dài hơn sau khi AI nén, luồng tự chuyển sang đăng chữ thường đầy đủ thay vì bỏ qua nhóm; bài không vượt giới hạn vẫn dùng nền như cũ.
+- v1.9.65: B2 không còn tăng “bỏ qua” rồi giữ composer cũ khi Facebook chậm trước nút Đăng. Lỗi trước submit sẽ dọn cả hộp thoại “Rời khỏi Trang” và thử lại tối đa hai lần; chỉ lỗi cấu hình có chủ đích (nhóm không hỗ trợ ẩn danh/nền) mới được bỏ qua. Lỗi sau khi đã bấm Đăng tiếp tục dừng fail-closed để không đăng trùng.
+- v1.9.64: Bộ lọc nhóm B1/B2 chuẩn hóa dấu tiếng Việt, nhưng với từ viết tắt hai ký tự như `AI` chỉ khớp cả từ. Vì vậy “Chọn tất cả” sau khi lọc AI không kéo theo nhóm có chuỗi trùng ngẫu nhiên như “Chai”, “Main” hoặc “AIO”; từ khóa dài vẫn tìm gần đúng như trước.
+- v1.9.63: `autoReloadAndRetry` gửi message trực tiếp trước, chỉ reload Facebook khi content script không phản hồi. Các nút tải danh sách (bao gồm B2 Học nhóm) vì vậy không làm popup đóng trước khi kết quả quét được lưu/render.
+- v1.9.62: Bộ tải nhóm đã tham gia (`scanJoinedGroups`) chỉ nhận link trang chủ dạng `/groups/<id>/`, bỏ qua permalink bài viết và các dòng thông báo Facebook. Vì vậy mọi danh sách nhóm dùng chung (đặc biệt B2 Học nhóm) không bao giờ hiển thị hoặc chọn một thông báo như nhóm đích.
+- v1.9.61: B1 **Học nhóm** không còn dừng giả sau 8 vòng cuộn khi người dùng đặt một số bài cụ thể. Cả mode hữu hạn và không giới hạn tiếp tục đến khi đủ số bài yêu cầu hoặc Facebook không tải thêm bài mới qua vài vòng liên tiếp; Stop/runId vẫn được kiểm tra ở mỗi vòng. Bắt đầu lượt học mới cũng xóa outline/preview AI cũ để B1/B2 không hiển thị nhầm dữ liệu của lượt trước.
+- v1.9.60: B2 nền màu truyền yêu cầu riêng 1–2 câu cho AI thay vì mâu thuẫn với mặc định 2–5 câu. Nếu lượt nén theo khoảng ký tự vẫn quá dài, AI nhận thêm một lượt giới hạn cứng chỉ với cận trên; fallback chỉ dùng câu đã kết thúc, không cắt giữa câu. Vì vậy mức 100–130 ký tự vẫn ưu tiên bài đủ ý thay vì hủy toàn bộ lượt trước khi mở Facebook.
+- v1.9.59: Các checkbox nhóm đích B2 được lưu ở `chrome.storage.sync.trendTargetGroupKeys` và khôi phục khi popup mở lại/tải lại danh sách nhóm. Nút “Chọn tất cả đích” cũng lưu ngay; B2 không còn mất danh sách nhóm đích sau khi popup đóng.
 - v1.9.58: Khối radio `trendDistributionModes` của B2 luôn hiển thị. Ở `sequential`, radio bị disabled/mờ và `trendDistributionHint` giải thích phải đổi sang `selected`; nhờ vậy người dùng vẫn nhìn thấy các cách phân bài thay vì tưởng tính năng bị thiếu.
 - v1.9.57: Khi B2 dùng bài tích B1, `trendPostDistributionMode` (sync) cho phép chọn một radio: `auto`, `many-to-one`, `one-to-many`, `many-to-many`. Mode cụ thể fail-closed nếu không khớp số bài/số nhóm; `many-to-one` tự đặt `trendTargetGroups=1`. Mode bị ẩn/vô hiệu ở `sequential` và được chụp vào `trendPostConfig.distribution` trước khi gọi AI/đăng.
 - v1.9.56: B2 `trendPostSourceMode=selected` tự lập kế hoạch theo bài B1 và nhóm đích: một bài nguồn được dùng cho mọi nhóm; từ hai bài nguồn trở lên được chia đều hết các bài vào nhóm, không trùng nguồn. `trendPostPlan` hiển thị kế hoạch trước khi Start; `trendPostsPerGroup` chỉ hiện/dùng ở mode `sequential`. Mỗi job mang `groupPostTotal` để trạng thái tiến trình đúng cả khi phân bổ không đều.
@@ -47,7 +310,7 @@ Tài liệu này là bản mô tả hành vi cần giữ khi bảo trì dự án
 - v1.9.20: link nhóm nguồn/đích là chế độ chỉ định trực tiếp. Khi ô link có dữ liệu, B1/B2 chỉ dùng các URL trong ô đó; khi ô link trống, mới dùng đúng các nhóm đã tích. UID số được giữ nguyên trong cấu hình và URL điều hướng.
 - v1.9.19: kéo dài cửa sổ proof bài B2 từ 30 lên 60 giây để chờ feed Facebook chèn bài ẩn danh/nền chậm; tránh báo thất bại giả sau khi Facebook đã nhận lệnh đăng.
 - v1.9.18: sửa click các nút màu trong bảng nền của B2 Học nhóm: thử native click trước khi dùng trusted mouse để Facebook cập nhật trạng thái nền sau animation; vẫn fail-closed nếu chưa có proof nền.
-- v1.9.17: B2 Học nhóm có tùy chọn đăng kèm nền màu riêng: tắt để giữ text-only, chọn một màu cố định hoặc random trong các màu đã tích. Nền cố định chỉ được coi là thành công khi Facebook xác nhận đúng màu; Random chỉ chọn nền trơn thực tế, tránh lặp màu liền kề và không dùng gradient/hình minh họa. Nội dung được giới hạn tối đa 140 ký tự theo cấu hình để Facebook giữ nền; nếu không xác nhận được nền thì không nhập/không đăng nhóm đó.
+- v1.9.17: B2 Học nhóm có tùy chọn đăng kèm nền màu riêng: tắt để giữ text-only, chọn một màu cố định hoặc random trong các màu đã tích. Nền cố định chỉ được coi là thành công khi Facebook xác nhận đúng màu; Random chỉ chọn nền trơn thực tế, tránh lặp màu liền kề và không dùng gradient/hình minh họa. Nội dung được giới hạn tối đa 130 ký tự theo cấu hình để Facebook giữ nền; nếu bài B2 vẫn dài hơn sau khi AI nén thì chuyển sang đăng chữ thường đầy đủ.
 - v1.9.16: B2 bắt buộc ẩn danh ưu tiên nút Facebook “Bài viết ẩn danh” khi nhóm cung cấp luồng composer riêng, xác nhận “Tạo bài viết ẩn danh” rồi mới kiểm tra switch và nhập bài; vẫn giữ fallback switch trong composer thường và không đăng công khai.
 - v1.9.15: B1/B2 Học nhóm nhận thêm link nhóm theo từng dòng, vẫn giữ danh sách checkbox. Có thể ghi `URL | Tên nhóm` để truyền đúng tên hiển thị cho AI; link-only target sẽ mở nhóm thật rồi lấy tên Facebook trước khi AI tạo bài. Prompt B2 riêng được ghép với prompt viết lại và bắt buộc hỗ trợ `{groupName}`.
 - v1.9.14: B2 Học nhóm có công tắc `trendAnonymousMode`/`trendAnonymousEnabled` để bắt buộc đăng ẩn danh. Trước khi nhập bài, `trend.js` phải tìm switch Facebook `Đăng ẩn danh` (`aria-checked=true`) và tự xác nhận hộp thoại công khai danh tính bằng nút OK nếu Facebook hiển thị; nhóm không có hoặc không xác nhận được switch bị bỏ qua, không fallback sang đăng công khai. Proof chờ duyệt rõ ràng được coi là terminal proof và vẫn giữ nhóm 8–12 giây.
@@ -139,7 +402,7 @@ Tài liệu này là bản mô tả hành vi cần giữ khi bảo trì dự án
 - Lưu tương thích ở `chrome.storage.sync`: `aiProvider`, `aiApiKey`, `aiModel`, `aiCustomUrl`, `aiKeys`, cùng các khóa `groupPostAi*` cũ.
 - Lưu profile theo provider ở `chrome.storage.local.unifiedAiProfiles` để không phải nhập lại.
 - Khi đổi provider, lấy profile riêng của provider đó; không ghi đè key của provider khác.
-- Gemini dùng Interactions API (`v1beta/interactions`) với model mặc định `gemini-flash-lite-latest`, header `x-goog-api-key`.
+- Gemini dùng endpoint API-key `v1beta/models/{model}:generateContent` với model mặc định `gemini-flash-lite-latest`, header `x-goog-api-key`; Interactions API yêu cầu OAuth nên không dùng cho key Google AI Studio.
 - OpenAI, Groq, OpenRouter, DeepSeek, Mistral và Custom dùng định dạng OpenAI-compatible; Claude/Muse dùng `/v1/messages`.
 - Nút Test API phải gọi `action: "aiTest"`, kiểm tra key/model/Custom URL và trả lỗi thân thiện.
 - Nếu API lỗi hoặc hết quota, comment dùng câu mẫu dự phòng; đăng bài nhóm và Share bài phải báo lỗi theo chính sách riêng, không tạo vòng lặp vô hạn. Share bài không dùng một lời dẫn chung để thay thế vì sẽ làm các nhóm bị trùng nội dung.
@@ -165,10 +428,10 @@ Tài liệu này là bản mô tả hành vi cần giữ khi bảo trì dự án
 ### Mode Xác nhận lời mời (`confirm`)
 
 1. Chỉ chạy trên `/friends/requests`; chỉ lấy nút “Xác nhận/Chấp nhận/Confirm/Accept” trong thẻ lời mời có link hồ sơ, không lấy nút trong dialog/menu. Facebook có thể đặt danh sách lời mời ngoài `role="main"`, vì vậy selector phải tìm container theo heading “Lời mời kết bạn” và không được chọn link của bạn chung trong bảng/aria-label “bạn chung”.
-2. Bộ lọc riêng trong `config.confirmFilters`: `minMutual`, `minCommonGroups`, `hometown`, `school`, `requirePhoto`, `skipUnknown`. Bộ lọc số dùng ô nhập; `0` nghĩa là tắt. Khi thiếu dữ liệu và `skipUnknown=true`, hồ sơ được bỏ qua, không tự coi là đạt.
+2. Bộ lọc riêng trong `config.confirmFilters` chỉ có `minMutual`; `0` nghĩa là không lọc. Không đọc nhóm chung, quê quán, trường học hay ảnh đại diện.
 3. Khi người dùng bấm **Bắt đầu**, vòng chạy tự gọi `collectConfirmCandidates` và áp dụng `config.confirmFilters` cho từng hồ sơ; không phụ thuộc vào việc đã bấm **Quét thử**. Quét thử chỉ highlight/xem trước kết quả, không tạo điều kiện mở khóa vòng chạy.
-4. Nếu bộ lọc cần thêm dữ liệu, luồng có thể mở đúng profile đúng một lần trong mỗi phiên, đọc text công khai, lưu lại các bằng chứng dạng số/boolean trong state rồi quay lại danh sách; không lưu nguyên văn hồ sơ vào log/handoff. State chỉ giữ URL/profile key tạm thời để resume đúng hồ sơ. Có bản ghi trong `profileEvidenceByKey` nghĩa là đã kiểm tra, kể cả khi các giá trị vẫn là `null`; với `skipUnknown=true`, hồ sơ đó được bỏ qua và không mở lại.
-5. State riêng: `friendConfirmRunState`, `friendConfirmActive`, `friendConfirmAccepted`, `friendConfirmSkipped`, `friendConfirmUncertain`, `friendConfirmStatus`, `friendConfirmHistory`. `stage`, `pendingProfile` và `profileEvidenceByKey` bảo vệ reload giữa lúc đọc profile.
+4. Luồng không mở profile để đọc thêm; chỉ phân tích dữ liệu đã hiện trên card lời mời.
+5. State riêng: `friendConfirmRunState`, `friendConfirmActive`, `friendConfirmAccepted`, `friendConfirmSkipped`, `friendConfirmUncertain`, `friendConfirmStatus`, `friendConfirmHistory`.
 6. Trước cú bấm phải kiểm tra active/runId; sau cú bấm chỉ tăng `friendConfirmAccepted` khi nút/card chuyển sang “Bạn bè/Friends” hoặc Facebook đưa thông báo xác nhận rõ ràng. Trạng thái mơ hồ ghi `uncertain` và không retry.
 7. Khi các card đang render đều đã xử lý, dùng nút xác nhận cuối làm neo để tìm ancestor có `overflow-y` cuộn được, cuộn chính container đó rồi mới tính một vòng chờ tải thêm; chỉ fallback sang `window` nếu trang không có scroll container riêng.
 
@@ -179,9 +442,19 @@ Tài liệu này là bản mô tả hành vi cần giữ khi bảo trì dự án
 - Nút Dừng đặt `active=false`, content script phải thoát ở điểm chờ tiếp theo. Không cộng lời mời chưa xác nhận.
 - Khi Facebook báo giới hạn/chặn/xác minh, dừng an toàn và hiển thị cảnh báo; không cố vượt giới hạn.
 
+### Mode Theo bạn của bạn (`friend-of-friend`)
+
+1. **Chọn nguồn:** nhập link profile hoặc tải danh sách bạn bè của nick ở `/friends/list/`, tìm theo tên và chọn người. Tải danh sách nick chỉ đọc, không gửi lời mời.
+2. **Bắt đầu:** nút nguồn và nút Bắt đầu gọi `friendFoFStart` với snapshot nguồn/cấu hình. Nút preview chung bị ẩn/không làm gì ở mode này để không thể vô tình gửi lời mời từ thao tác xem thử. Persist `friendFoFRunState` trước navigation; owner tab resume khi `friendFoFActive` còn bật. Phiên preview cũ phải chọn lại nguồn và Start.
+3. **Điều hướng:** source-profile xác minh đúng nguồn/link Friends; source-list chỉ xử lý đúng danh sách. Bạn chung/Followers/Following bị dừng. Không mở từng profile ứng viên.
+4. **Xử lý:** từng card theo thứ tự DOM, chỉ chấp nhận card chứa một profile key. Bỏ qua history và nhãn Bạn bè/Đã gửi/Hủy lời mời. Chờ Min–Max rồi tìm lại đúng card/nút Add Friend trước click.
+5. **History:** ghi uncertain TRƯỚC dispatch; card đã hiển thị Bạn bè/Đã gửi cũng được ghi guard `existing` để không phụ thuộc việc Facebook có giữ nhãn sau lần render sau. Kiểm tra Stop/run ID, route và nhãn ngay trước click DOM đồng bộ một lần. History confirmed/uncertain/existing không tự hết hạn hoặc bị cắt theo giới hạn 2.000 cũ. Reset giữ history; xóa history chủ động là thao tác riêng.
+6. **Proof:** chỉ tăng sentCount khi đúng card của ứng viên chuyển pending/friends. Toast hoặc card bên cạnh không phải proof. Dialog/kết quả mơ hồ dừng phiên; guard còn trong history nên chạy lại không gửi lại người đó.
+7. **Tải tiếp:** hết card có thể gửi mới cuộn/chờ lô mới. Hai lượt ở đáy, hết spinner và không tiến triển mới báo hết. Giới hạn 320 lượt/120 giây không tiến triển báo chưa đầy đủ. Stop/Reset giữ danh sách nguồn và history. Chưa hỗ trợ hẹn lịch.
+
 ### Theo bộ lọc tìm kiếm
 
-Giao diện hiện tại có ba mode trên nhưng chưa có mode tìm kiếm riêng. Không tự coi trang `/search` là nguồn kết bạn; muốn bổ sung mode tìm kiếm phải tạo selector, state và điều kiện xác nhận riêng, sau đó cập nhật tài liệu này.
+Mode này tìm tên **bạn nguồn trong danh sách bạn bè của nick hiện tại**, không phải tìm người bằng route Facebook `/search`. Không tự coi trang `/search` là nguồn kết bạn; nếu bổ sung search Facebook sau này phải tạo selector, state và điều kiện xác nhận riêng.
 
 ## 2. Tham gia nhóm (`group.js`)
 
@@ -241,7 +514,8 @@ Luồng tương tự nhưng dùng danh sách `/groups/discover`; state tách bi�
 - Like dùng click tin cậy và xác nhận nhãn/trạng thái đổi. Cảm xúc random chọn một trong Like/Love/Haha/Wow/Sad/Angry, mở picker rồi xác nhận đúng nhãn.
 - Đánh dấu `data-feed-interacted="1"`, chờ delay Min–Max trước bài tiếp theo. Không thao tác nút Like trong comment con.
 - Nếu DOM bị recycle, bỏ qua node cũ và tìm lại; không bấm lại một bài đã đánh dấu.
-- Tương tác nhóm đã tham gia (`groupInteract*` trong `feed.js`): mở N nhóm đầu theo thứ tự đã tích (`groupInteractTargetGroups`), mỗi nhóm thả cảm xúc đúng `perGroup` bài với delay Min–Max. Khi bật `groupInteractAiComment`, mỗi bài đã react thành công được comment AI 1 lần bằng `aiGenerateComment` chung + `fallbackComment` khi lỗi; dùng `groupInteractPostAIComment()` riêng cho route nhóm (bấm 1 lần, chờ ô ≤12s, gõ trustedInput, gửi 1 lần, verify proof 30s ngoài editor), lịch sử/guard/counter riêng `groupInteractCommentHistory/Guard/AiDone`, không dùng chung `aiCommentHistory` của Bảng tin. Bỏ qua bài <15 ký tự, đã history, đã có comment của chính tài khoản; `unconfirmed-skip` vẫn khóa bài chống trùng.
+- Tương tác Like/Random nhóm đã tham gia (`groupInteract*` trong `feed.js`): mở N nhóm đầu theo thứ tự đã tích (`groupInteractTargetGroups`), mỗi nhóm thả cảm xúc đúng `perGroup` bài với delay Min–Max. Chỉ tăng `groupInteractDone` sau proof cảm xúc; không gọi AI và không comment.
+- Comment AI nhóm đã tham gia (`groupComment*` trong `feed.js`): cùng danh sách nhóm và giới hạn bài nhưng chạy bằng nút riêng, tạo comment qua `aiGenerateComment` + `fallbackComment` khi lỗi, dùng `groupCommentHistory`, `groupCommentProcessedKeys`, `groupCommentSubmissionGuard`, `groupCommentRetryCounts`, `groupCommentSkipped` và proof comment riêng. Không yêu cầu bài đã được Like/Random trước đó. Mọi bài cấp cao có nút Bình luận chính đều được đưa vào AI, kể cả caption ngắn hoặc đã có comment khác; bài ảnh dùng text/alt text/ngữ cảnh dự phòng. Lạc permalink, composer tải chậm hoặc nhập hụt được bỏ khóa và thử lại tối đa 3 lần. Chỉ loại reply/comment con, Messenger, quảng cáo và Reel/Watch; `unconfirmed-skip` vẫn khóa bài sau cú bấm không có proof để tránh gửi trùng.
 
 ## 5. Comment AI trên Bảng tin — logic phải giữ nguyên
 
@@ -327,7 +601,7 @@ Luồng tương tự nhưng dùng danh sách `/groups/discover`; state tách bi�
 1. Tab Học nhóm dùng lại danh sách `joinedGroups` đã tải ở các tính năng khác; có nút tải lại riêng nhưng không quét song song khi luồng khác đang chạy. B1 có bộ chọn `trendLearnSourceMode` với ba chế độ độc lập: `links` học đúng các link trong `trendSourceLinks`, `source-selected` học đúng các nhóm được tích trong danh sách nguồn, `target-selected` học đúng các nhóm đích đã tích/nhập ở B2. B2 vẫn có `trendTargetLinks`: mỗi dòng là một URL `/groups/{id-or-slug}`; định dạng `URL | Tên nhóm` là tùy chọn để cung cấp tên hiển thị chính xác. Chế độ link không có link sẽ báo lỗi cấu hình, không tự rơi sang danh sách checkbox.
 2. B1 — Học bài: tích nhóm nguồn và mặc định bật **Học đến hết bài có thể tải (không giới hạn)**; nếu tắt có thể đặt số bài tối đa mỗi nhóm. State `trendLearnActive/RunId/OwnerTabId/Config/Index/Posts/Count/Ready` trong `chrome.storage.local`; prompt/config lưu `chrome.storage.sync`, trong đó `trendLearnConfig.unlimited` giữ lựa chọn của phiên. Tab tự mở từng nhóm nguồn với `sorting_setting=CHRONOLOGICAL`, ưu tiên node con trực tiếp của `div[role="feed"]` có nút `Viết bình luận`/`Gửi nội dung này...` (và chỉ dùng `div[role=article]` khi có cùng dấu hiệu), đánh dấu `data-trend-learned` sau khi parse, bỏ sponsored/comment/bài <20 ký tự, không cắt kho ở 300 bài. Chế độ không giới hạn cuộn tiếp cho tới khi Facebook không tăng thêm node/trang trong 3 vòng liên tiếp; Stop/runId vẫn được kiểm tra trong mọi vòng. Chỉ bóc trong `div[role="main"]`, loại `[role=dialog/menu/complementary/navigation/banner]`, khung Messenger/chat (regex `Tin nhắn do/Mở đoạn chat/hoạt động gần nhất/...` kế thừa từ `scrape.js`) — không bao giờ lấy tin nhắn chat làm bài học. Bộ đọc dùng `innerText` và fallback `textContent` để chịu được Facebook render text ẩn trong SPA.
 3. Viết lại: popup ghép bài đã lưu thành `sourceText` (tối đa 12 bài) rồi gọi `background.js:aiRewriteTrend` với `{groupName}` + hồ sơ văn phong chung. `trendPrompt` là prompt nền; `trendGroupPrompt` là prompt B2 riêng theo group name và được ghép thêm cho từng nhóm. AI chỉ học dàn ý/góc nhìn rồi viết thành bài của mình, không copy nguyên văn, không bịa số liệu. Nút "Viết lại" chỉ preview 1 bản; nút Đăng mới sinh biến thể riêng cho từng nhóm đích.
-4. B2 — Đăng: chọn nhóm đích hoặc nhập link đích, giới hạn số nhóm + delay. Khi `trendTargetLinks` có dữ liệu, chỉ các link trong đó được chạy; khi ô link trống, chỉ checkbox được tích được chạy. State `trendPostActive/RunId/OwnerTabId/Config/Index/Done/Skipped/NextAt/LastColor` riêng, stage submit riêng, chờ giao diện nhóm/composer tối đa 45 giây, chờ bài hiển thị tối đa 30 giây và giữ nhóm 8–12 giây trước khi chuyển. Với link-only không có tên sau dấu `|`, `trend.js` lấy heading/tên trang Facebook sau khi vào nhóm rồi mới gọi AI bằng `sourceText + prompt + styleProfileId` lưu trong `trendPostConfig`, tránh gửi slug/ID giả làm `{groupName}`. Công tắc **Bắt buộc đăng ẩn danh** lưu ở `chrome.storage.sync.trendAnonymousMode`, truyền vào `trendPostConfig.anonymousMode`; khi bật, `trend.js` phải xác nhận switch `Đăng ẩn danh` của đúng composer trước khi gõ và xác nhận thêm hộp thoại “Bài viết ẩn danh”/OK nếu Facebook yêu cầu. Nhóm không hỗ trợ hoặc switch không chuyển sang `aria-checked=true` được bỏ qua an toàn, không đăng thường. Công tắc **Đăng kèm nền màu** lưu `trendBackgroundEnabled/Mode/FixedColor/Colors/MaxChars` trong `chrome.storage.sync` và truyền vào `trendPostConfig.background`; `fixed` chỉ chấp nhận đúng nền cố định, `random` chọn một màu trơn trong palette Facebook và tránh lặp màu liền kề. `trend.js` phải xác nhận nền qua trạng thái chọn hoặc style thật trước khi gõ; nếu Facebook không có/không xác nhận nền thì bỏ qua nhóm, không gõ text-only. Nếu Facebook báo bài đang chờ duyệt rõ ràng, đó là proof terminal thay cho feed-visible và vẫn phải giữ nhóm 8–12 giây. Proof không rõ hoặc bài không hiện thì dừng tại nhóm, không retry. Stop/Reset broadcast mọi tab + ghi flag trực tiếp; resume chỉ owner tab + runId khớp. Các stage danh tính và nền trước submit bảo vệ reload trước cú bấm Đăng.
+4. B2 — Đăng: chọn nhóm đích hoặc nhập link đích, giới hạn số nhóm + delay. Khi `trendTargetLinks` có dữ liệu, chỉ các link trong đó được chạy; khi ô link trống, chỉ checkbox được tích được chạy. Checkbox nhóm đích lưu bằng `trendTargetGroupKeys` trong `chrome.storage.sync` nên vẫn giữ sau khi popup đóng hoặc danh sách `joinedGroups` render lại. State `trendPostActive/RunId/OwnerTabId/Config/Index/Done/Skipped/NextAt/LastColor` riêng, stage submit riêng, chờ giao diện nhóm/composer tối đa 45 giây, chờ bài hiển thị tối đa 30 giây và giữ nhóm 8–12 giây trước khi chuyển. Với link-only không có tên sau dấu `|`, `trend.js` lấy heading/tên trang Facebook sau khi vào nhóm rồi mới gọi AI bằng `sourceText + prompt + styleProfileId` lưu trong `trendPostConfig`, tránh gửi slug/ID giả làm `{groupName}`. Công tắc **Bắt buộc đăng ẩn danh** lưu ở `chrome.storage.sync.trendAnonymousMode`, truyền vào `trendPostConfig.anonymousMode`; khi bật, `trend.js` phải xác nhận switch `Đăng ẩn danh` của đúng composer trước khi gõ và xác nhận thêm hộp thoại “Bài viết ẩn danh”/OK nếu Facebook yêu cầu. Nhóm không hỗ trợ hoặc switch không chuyển sang `aria-checked=true` được bỏ qua an toàn, không đăng thường. Công tắc **Đăng kèm nền màu** lưu `trendBackgroundEnabled/Mode/FixedColor/Colors/MaxChars` trong `chrome.storage.sync` và truyền vào `trendPostConfig.background`; `fixed` chỉ chấp nhận đúng nền cố định, `random` chọn một màu trơn trong palette Facebook và tránh lặp màu liền kề. `trend.js` phải xác nhận nền qua trạng thái chọn hoặc style thật trước khi gõ; nếu Facebook không có/không xác nhận nền thì bỏ qua nhóm, không gõ text-only. Nội dung nền được giới hạn ở 130 ký tự; nếu AI vẫn trả dài hơn sau khi nén, B2 bỏ chọn nền cho bài đó và đăng chữ thường đầy đủ. Nếu Facebook báo bài đang chờ duyệt rõ ràng, đó là proof terminal thay cho feed-visible và vẫn phải giữ nhóm 8–12 giây. Proof không rõ hoặc bài không hiện thì dừng tại nhóm, không retry. Stop/Reset broadcast mọi tab + ghi flag trực tiếp; resume chỉ owner tab + runId khớp. Các stage danh tính và nền trước submit bảo vệ reload trước cú bấm Đăng.
    B2 có bộ chọn nguồn bài riêng: `trendPostSourceMode=selected` tự lập kế hoạch từ bài tích B1 và các nhóm đích. Radio `trendPostDistributionMode` cho phép người dùng chọn rõ `many-to-one`, `one-to-many` hoặc `many-to-many` (mặc định `auto`); mỗi mode kiểm tra điều kiện chính xác và không tự suy diễn/lặp nguồn khi lựa chọn không khớp. Nếu tích đúng một bài, bài đó tạo biến thể riêng cho mọi nhóm; nếu tích từ hai bài trở lên, B2 chia hết bài theo từng nhóm với chênh lệch tối đa một bài và không dùng lặp nguồn. Không đủ bài riêng để phủ mỗi nhóm thì báo rõ thay vì lặp; trường hợp muốn dùng chung phải tích đúng một bài. `sequential` lấy các bài còn lại từ mới nhất theo `trendPostsPerGroup`; chỉ mode này hiện/dùng ô số bài mỗi nhóm. `trendPostPlan` hiển thị kế hoạch trước khi Start. `trendPostSelectedIds` lưu ở `chrome.storage.sync`; `trendTargetGroups` và `trendPostDelay` được chụp vào `trendPostConfig`. Run mới tạo một job cho từng bài đăng (`jobs`, `groupIndex`, `postIndex`, `groupPostTotal`, `trendPostIndex`); chỉ sau proof thành công mới xóa các `sourcePostIds` khỏi `trendLearnPosts` và cập nhật `trendLearnCount`. Bài lỗi/bỏ qua hoặc phiên dừng trước proof không tiêu hao bài học.
 5. Tiến trình học hiển thị theo thời gian thực: status ghi rõ nhóm thứ mấy, vòng cuộn, số bài đã lấy/mục tiêu, số ô đã quét và tổng đã lưu; `trendLearnPosts` được lưu tạm sau mỗi vòng nên popup vẽ ngay danh sách bài (nguồn + trích đoạn + link, mới nhất lên đầu). Chuyển nhóm chờ URL đổi tối đa ~25s trong cùng context (chịu được SPA không reload); reload thật thì resume từ `trendLearnIndex` đã persist. Bấm Dừng không bị ghi đè thành "Học xong".
 6. Cấu hình cũ `trendLearnFromTarget` vẫn được đọc để migrate một lần sang `trendLearnSourceMode`; cấu hình mới lưu mode rõ ràng trong `chrome.storage.sync`, đồng thời giữ khóa cũ để tương thích phiên bản trước. Danh sách nguồn luôn hiển thị để người dùng có thể tích/chuyển mode mà không phải tải lại popup.
@@ -385,3 +659,4 @@ Luồng tương tự nhưng dùng danh sách `/groups/discover`; state tách bi�
 ### v1.6.8
 - Khi xác nhận nhóm, dùng nhãn chữ đang hiển thị trên nút trước, chỉ fallback sang `aria-label`; Facebook đôi lúc giữ `aria-label` “Tham gia nhóm …” sau khi đã đổi nút thành “Truy cập vào nhóm”.
 - Chờ hộp câu hỏi tối đa khoảng 11 giây để không làm delay 5–15 giây bị kéo dài ở nhóm không có câu hỏi.
+- v1.9.66: B2 ghi nhận bằng chứng nút nền đã được Facebook xác nhận trước khi bảng màu bị tháo khỏi DOM; hậu kiểm không bỏ qua nhầm nền sáng chỉ vì computed style của ô nhập trở về trắng.

@@ -3,11 +3,23 @@
   const MODE_SUGGESTIONS="suggestions";
   const MODE_GROUP_COMMON="group-common";
   const MODE_CONFIRM="confirm";
+  const MODE_FRIEND_OF_FRIEND="friend-of-friend";
   const HISTORY_UNCERTAIN_TTL=24*60*60*1000;
   const MAX_TRACKED_PROFILES=2000;
   const GROUP_LOAD_WAIT_MS=120000;
   const GROUP_LOADING_GRACE_MS=30000;
   const GROUP_LOAD_RELOADS=1;
+  const FOF_OWN_FRIENDS_URL="/friends/list/";
+  const FOF_MAX_SOURCE_PROFILES=5000;
+  const FOF_MAX_CANDIDATES=5000;
+  const FOF_MAX_SCROLL_ROUNDS=320;
+  const FOF_LIST_WAIT_MS=60000;
+  const FOF_SOURCE_WAIT_MS=45000;
+  const FOF_SCROLL_PROGRESS_WAIT_MS=7000;
+  const FOF_SCROLL_POLL_MS=500;
+  const FOF_SCROLL_MIN_SETTLE_MS=1800;
+  const FOF_END_CONFIRMATIONS=2;
+  const FOF_NO_PROGRESS_TIMEOUT_MS=120000;
   const RESERVED_PATHS=new Set([
     "about","ads","bookmarks","events","friends","gaming","groups","help","home.php",
     "marketplace","messages","notifications","pages","photo","privacy","profile.php","reel",
@@ -20,6 +32,13 @@
   let confirmLoopActive=false;
   let confirmLocalRunId="";
   let confirmStopRequested=false;
+  let fofScanLoopActive=false;
+  let fofScanLocalRunId="";
+  let fofScanStopRequested=false;
+  let fofSendLoopActive=false;
+  let fofSendLocalRunId="";
+  let fofSendStopRequested=false;
+  let fofSendResumeTimer=0;
 
   const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   const cleanText=value=>String(value||"").replace(/[\u200B-\u200D\u2060\uFEFF]/g,"").replace(/\s+/g," ").trim();
@@ -280,20 +299,19 @@
   }
 
   function normalizeConfirmConfig(input={}){
-    const source=input.confirmFilters&&typeof input.confirmFilters==="object"?input.confirmFilters:{};
-    const cleanKeyword=value=>cleanText(value).slice(0,120);
+    // Popup persists a durable state before navigating to /friends/requests.
+    // That provisional state uses `confirmFilters`; a resumed content script
+    // may already have the normalized `filters` shape. Accept both forms.
+    const source=input.confirmFilters&&typeof input.confirmFilters==="object"
+      ?input.confirmFilters
+      :(input.filters&&typeof input.filters==="object"?input.filters:{});
     return {
       mode:MODE_CONFIRM,
       minDelay:Math.min(Math.max(1000,parseInt(input.minDelay)||5000),Math.max(1000,parseInt(input.maxDelay)||15000)),
       maxDelay:Math.max(Math.max(1000,parseInt(input.minDelay)||5000),Math.max(1000,parseInt(input.maxDelay)||15000)),
       maxRequests:Math.max(1,Math.min(100,parseInt(input.maxRequests)||20)),
       filters:{
-        minMutual:Math.max(0,Math.min(999,parseInt(source.minMutual)||0)),
-        minCommonGroups:Math.max(0,Math.min(999,parseInt(source.minCommonGroups)||0)),
-        hometown:cleanKeyword(source.hometown),
-        school:cleanKeyword(source.school),
-        requirePhoto:!!source.requirePhoto,
-        skipUnknown:source.skipUnknown!==false
+        minMutual:Math.max(0,Math.min(999,parseInt(source.minMutual)||0))
       }
     };
   }
@@ -345,21 +363,22 @@
     if(!root)return {ready:false,candidates:[]};
     const attempted=new Set(state.attemptedKeys||[]);
     const map=new Map();
-    for(const button of rawAddButtons(root)){
+    // Facebook can reflow/recycle cards while the page is scrolled. Sorting by
+    // viewport coordinates therefore changes the queue between iterations
+    // even though the DOM list order is stable. Keep the first matching button
+    // in querySelectorAll order so the Suggestions flow advances top-to-bottom
+    // through Facebook's actual card sequence.
+    const buttons=rawAddButtons(root);
+    for(let domOrder=0;domOrder<buttons.length;domOrder++){
+      const button=buttons[domOrder];
       const candidate=candidateFromButton(button,root);
       if(!candidate||attempted.has(candidate.key)||history[candidate.key])continue;
       if(state.config.minMutual>0&&(candidate.mutualCount==null||candidate.mutualCount<state.config.minMutual))continue;
+      candidate.domOrder=domOrder;
       if(!map.has(candidate.key))map.set(candidate.key,candidate);
     }
     const candidates=[...map.values()];
-    candidates.sort((a,b)=>{
-      const rectA=a.button.getBoundingClientRect();
-      const rectB=b.button.getBoundingClientRect();
-      if(Math.abs(rectA.top - rectB.top) > 12){
-        return rectA.top - rectB.top;
-      }
-      return rectA.left - rectB.left;
-    });
+    candidates.sort((a,b)=>(a.domOrder??0)-(b.domOrder??0));
     return {ready:true,candidates};
   }
 
@@ -589,6 +608,804 @@
     return "navigate";
   }
 
+  // ---- Friends-of-friends source engine: separate read/queue/send flow ----
+  // This mode first reads the current account's friend list (or one explicit
+  // source profile), then reads the source's visible Friends section. It does
+  // not reuse the Suggestions/Common-members queue or their counters/proof.
+  function fofOwnFriendsUrl(){return `${location.origin}${FOF_OWN_FRIENDS_URL}`;}
+
+  function fofIsOwnFriendsRoute(){
+    const path=location.pathname.replace(/\/+$/g,"").toLowerCase()||"/";
+    return path==="/friends/list";
+  }
+
+  function fofProfileKeyFromFriendsUrl(href){
+    let url;
+    try{url=new URL(href,location.origin);}catch{return "";}
+    const id=url.searchParams.get("id");
+    if(id&&/^\d+$/.test(id))return `id:${id}`;
+    const parts=url.pathname.split("/").filter(Boolean);
+    const friendsIndex=parts.findIndex(part=>part.toLowerCase()==="friends");
+    if(friendsIndex<=0)return "";
+    return profileKeyFromHref(`${url.origin}/${parts.slice(0,friendsIndex).join("/")}`);
+  }
+
+  function fofCurrentProfileKey(){
+    const key=profileKeyFromHref(location.href);
+    if(key)return key;
+    return fofProfileKeyFromFriendsUrl(location.href);
+  }
+
+  function fofNormalizeProfileUrl(value){
+    let url;
+    try{url=new URL(String(value||""),location.origin);}catch{return "";}
+    if(!/(^|\.)facebook\.com$/i.test(url.hostname))return "";
+    if(!profileKeyFromHref(url.href))return "";
+    url.hash="";
+    ["ref","refid","__tn__","__cft__","mibextid","locale"].forEach(key=>url.searchParams.delete(key));
+    return url.toString().replace(/\/$/,"");
+  }
+
+  function fofNormalizeUrlForNavigation(value){
+    let url;
+    try{url=new URL(String(value||""),location.origin);}catch{return "";}
+    if(!/(^|\.)facebook\.com$/i.test(url.hostname))return "";
+    url.hash="";
+    ["ref","refid","__tn__","__cft__","mibextid","locale"].forEach(key=>url.searchParams.delete(key));
+    return url.toString().replace(/\/$/,"");
+  }
+
+  function fofProfileLinks(root){
+    if(!root)return [];
+    return [...root.querySelectorAll("a[href]")].filter(link=>{
+      const href=link.href||"";
+      if(/mutual|friends_mutual|\/friends\/(?:suggestions|requests)/i.test(href))return false;
+      const label=lower(link.getAttribute("aria-label")||"");
+      if(/(?:bạn chung|mutual friend|common friend)/i.test(label))return false;
+      return !!profileKeyFromHref(href);
+    });
+  }
+
+  function fofFriendsViewRestricted(){
+    const main=document.querySelector('div[role="main"],main');
+    if(!main)return false;
+    const restricted=/^(?:bạn chung|mutual friends?|common friends?|người theo dõi|người theo dõi chung|followers?|following|mutual followers?)$/i;
+    return [...main.querySelectorAll('[role="tab"][aria-selected="true"],[role="tab"][data-state="active"]')]
+      .some(tab=>restricted.test(cleanText(tab.getAttribute("aria-label")||tab.innerText||tab.textContent)));
+  }
+
+  function fofFriendsListRoot(){
+    const main=document.querySelector('div[role="main"],main');
+    // `/friends/list/` is currently mounted inside Facebook's left
+    // `role=navigation` pane, while a source profile's Friends section lives
+    // in `role=main`. Resolve those layouts separately so a valid own-list is
+    // not rejected and a source scan cannot absorb unrelated global links.
+    const ownRoute=fofIsOwnFriendsRoute();
+    if(!ownRoute&&!main)return null;
+    const searchScope=ownRoute?document:main;
+    const headings=[...searchScope.querySelectorAll('[role="heading"],h1,h2,h3,h4')].filter(el=>{
+      if(!isVisible(el))return false;
+      const text=lower(el.getAttribute("aria-label")||el.innerText||el.textContent).replace(/\s*\(\d+\)\s*$/g,"");
+      return /^(?:(?:tất cả|all)\s+)?(?:bạn bè|friends)$/.test(text);
+    });
+    let fallback=null;
+    for(const heading of headings){
+      const boundary=ownRoute?(heading.closest('[role="navigation"]')||document.body):main;
+      let node=heading.parentElement;
+      for(let depth=0;node&&node!==document.body&&depth<14;depth++,node=node.parentElement){
+        if(node===boundary)break;
+        const count=fofProfileLinks(node).length;
+        // Stop at the first ancestor that contains the actual repeated list.
+        // Climbing farther would absorb Facebook's sidebar/header profile
+        // links and could make a source page look like a larger friend list.
+        if(count>=2)return node;
+        if(count===1&&!fallback)fallback=node;
+      }
+    }
+    if(fallback)return fallback;
+    // Some Facebook layouts expose the list without a heading but do expose
+    // a list/grid role. Use that bounded container; never fall back to the
+    // entire main region, which may contain unrelated profile links.
+    let best=null,bestCount=0;
+    const fallbackScope=ownRoute?(headings[0]?.closest('[role="navigation"]')||document.body):main;
+    for(const node of fallbackScope.querySelectorAll('[role="grid"],[role="list"]')){
+      const count=fofProfileLinks(node).length;
+      if(count>bestCount){best=node;bestCount=count;}
+    }
+    return bestCount?best:null;
+  }
+
+  function fofFindScrollContainer(anchor){
+    let node=anchor?.parentElement;
+    for(let depth=0;node&&node!==document.body&&depth<28;depth++,node=node.parentElement){
+      const style=getComputedStyle(node);
+      if(node.scrollHeight>node.clientHeight+80&&/(?:auto|scroll|overlay)/i.test(style.overflowY||""))return node;
+    }
+    return document.scrollingElement||document.documentElement;
+  }
+
+  function fofScrollList(root){
+    if(!root?.isConnected)root=fofFriendsListRoot();
+    if(!root)return null;
+    const links=fofProfileLinks(root);
+    const anchor=links[links.length-1];
+    const scroller=fofFindScrollContainer(anchor||root);
+    const before=fofListSnapshot(root,scroller);
+    if(anchor?.scrollIntoView)anchor.scrollIntoView({block:"end",inline:"nearest",behavior:"auto"});
+    const distance=Math.max(650,(scroller?.clientHeight||innerHeight)*.85);
+    if(scroller&&scroller!==document.documentElement&&scroller!==document.body){
+      scroller.scrollBy({top:distance,behavior:"auto"});
+      return before;
+    }
+    window.scrollBy({top:distance,behavior:"auto"});
+    return before;
+  }
+
+  function fofListLoading(root){
+    if(!root)return true;
+    return [...root.querySelectorAll('[role="status"],[aria-busy="true"]')].some(el=>{
+      if(!isVisible(el))return false;
+      const value=lower(el.getAttribute("aria-label")||el.innerText||el.textContent);
+      return el.getAttribute("aria-busy")==="true"||/^(?:đang tải|loading)(?:\.{0,3})?$/.test(value);
+    });
+  }
+
+  function fofListSnapshot(root,knownScroller=null){
+    if(!root?.isConnected)return null;
+    const links=fofProfileLinks(root);
+    const keys=[];
+    const seen=new Set();
+    for(const link of links){
+      const key=profileKeyFromHref(link.href||"");
+      if(!key||seen.has(key))continue;
+      seen.add(key);keys.push(key);
+    }
+    const anchor=links[links.length-1]||root;
+    const scroller=knownScroller?.isConnected?knownScroller:fofFindScrollContainer(anchor);
+    const doc=document.scrollingElement||document.documentElement;
+    const isDocument=!scroller||scroller===doc||scroller===document.documentElement||scroller===document.body;
+    const scrollTop=Math.max(0,Number(isDocument?(doc?.scrollTop||window.scrollY):scroller.scrollTop)||0);
+    const scrollHeight=Math.max(0,Number(isDocument?Math.max(doc?.scrollHeight||0,document.body?.scrollHeight||0):scroller.scrollHeight)||0);
+    const clientHeight=Math.max(1,Number(isDocument?(window.innerHeight||doc?.clientHeight):scroller.clientHeight)||1);
+    const bottomGap=Math.max(0,scrollHeight-clientHeight-scrollTop);
+    const bottomTolerance=Math.max(80,Math.min(240,clientHeight*.18));
+    return {
+      profileCount:keys.length,
+      tailKey:keys.slice(-5).join("|"),
+      loading:fofListLoading(root),
+      scrollTop,
+      scrollHeight,
+      clientHeight,
+      atBottom:bottomGap<=bottomTolerance
+    };
+  }
+
+  function fofListAdvanced(before,after){
+    if(!before||!after)return false;
+    return after.profileCount>before.profileCount||
+      (!!after.tailKey&&after.tailKey!==before.tailKey)||
+      after.scrollHeight>before.scrollHeight+24||
+      after.scrollTop>before.scrollTop+24;
+  }
+
+  async function fofWaitForListProgress(runId,before){
+    const startedAt=Date.now();
+    let latest=before;
+    let progressed=false;
+    while(Date.now()-startedAt<FOF_SCROLL_PROGRESS_WAIT_MS){
+      await sleep(FOF_SCROLL_POLL_MS);
+      if(!await readFoFScanState(runId))return {stopped:true,progressed:false,snapshot:latest};
+      const root=fofFriendsListRoot();
+      if(root){
+        latest=fofListSnapshot(root);
+        if(fofListAdvanced(before,latest))progressed=true;
+      }
+      if(progressed&&Date.now()-startedAt>=FOF_SCROLL_MIN_SETTLE_MS)break;
+    }
+    return {stopped:false,progressed,snapshot:latest};
+  }
+
+  function fofNameFromLink(link,card){
+    const label=cleanText(link?.getAttribute("aria-label")||link?.innerText||link?.textContent);
+    if(label)return label.slice(0,120);
+    const alt=cleanText(link?.querySelector("img")?.alt);
+    if(alt)return alt.slice(0,120);
+    return cleanText(card?.innerText||card?.textContent).split(" ").slice(0,8).join(" ").slice(0,120);
+  }
+
+  function fofCollectListProfiles(root,source={}){
+    const map=new Map();
+    for(const link of fofProfileLinks(root)){
+      const key=profileKeyFromHref(link.href||"");
+      const url=fofNormalizeProfileUrl(link.href||"");
+      if(!key||!url||key===source.key||map.has(key))continue;
+      let card=link.parentElement;
+      for(let depth=0;card&&card!==root&&depth<8;depth++,card=card.parentElement){
+        if(fofProfileLinks(card).length>1)break;
+      }
+      map.set(key,{key,name:fofNameFromLink(link,card),url,sourceKey:source.key||"",sourceName:source.name||""});
+      if(map.size>=FOF_MAX_CANDIDATES)break;
+    }
+    return [...map.values()];
+  }
+
+  function fofFindFriendsLink(sourceKey){
+    const main=document.querySelector('div[role="main"],main');
+    if(!main)return null;
+    const links=[...main.querySelectorAll('a[href]')].filter(link=>{
+      if(!isVisible(link))return false;
+      const label=lower(link.getAttribute("aria-label")||link.innerText||link.textContent);
+      const href=link.href||"";
+      if(/^https?:\/\/[^/]+\/friends(?:\/|\?|$)/i.test(href)||/\/friends\/(?:suggestions|requests)/i.test(href))return false;
+      return /^(?:bạn bè|friends)(?:\s*\(\d+\))?$/.test(label)||/\/friends(?:\/|\?|$)/i.test(href)||/[?&]sk=friends\b/i.test(href);
+    });
+    let best=null,bestScore=-1;
+    for(const link of links){
+      const href=link.href||"";
+      const linkKey=fofProfileKeyFromFriendsUrl(href);
+      let score=1;
+      if(linkKey&&linkKey===sourceKey)score+=8;
+      if(/^[^?]*\/friends(?:\/|\?|$)/i.test(href))score+=2;
+      if(/^(?:bạn bè|friends)/i.test(lower(link.getAttribute("aria-label")||link.innerText||link.textContent)))score+=2;
+      if(score>bestScore){best=link;bestScore=score;}
+    }
+    return best;
+  }
+
+  function fofSourceProfileEvidence(sourceKey){
+    if(!sourceKey)return false;
+    if(fofCurrentProfileKey()===sourceKey)return true;
+    const main=document.querySelector('div[role="main"],main');
+    return !!main&&fofProfileLinks(main).some(link=>profileKeyFromHref(link.href||"")===sourceKey);
+  }
+
+  function fofSourceFriendsPageMatches(state){
+    if(state.listUrl&&fofNormalizeUrlForNavigation(state.listUrl)===fofNormalizeUrlForNavigation(location.href))return true;
+    if(!/\/friends(?:\/|$)/i.test(location.pathname)||/\/friends\/(?:suggestions|requests|list)(?:\/|$)/i.test(location.pathname))return false;
+    const routeKey=fofProfileKeyFromFriendsUrl(location.href);
+    if(routeKey&&routeKey===state.source?.key)return true;
+    return fofSourceProfileEvidence(state.source?.key||"");
+  }
+
+  async function saveFoFSourceList(list){
+    const map=new Map();
+    for(const item of Array.isArray(list)?list:[]){
+      if(item?.key&&!map.has(item.key))map.set(item.key,item);
+      if(map.size>=FOF_MAX_SOURCE_PROFILES)break;
+    }
+    await chrome.storage.local.set({friendFoFSourceList:[...map.values()]});
+    return [...map.values()];
+  }
+
+  async function loadFoFSourceList(){
+    const stored=await chrome.storage.local.get("friendFoFSourceList");
+    return Array.isArray(stored.friendFoFSourceList)?stored.friendFoFSourceList:[];
+  }
+
+  async function saveFoFCandidates(list){
+    const map=new Map();
+    for(const item of Array.isArray(list)?list:[]){
+      if(!item?.key||!item.url)continue;
+      const existing=map.get(item.key);
+      if(existing){
+        const sources=[...new Set([...(existing.sourceNames||[]),item.sourceName].filter(Boolean))];
+        existing.sourceNames=sources.slice(0,12);
+      }else map.set(item.key,{...item,sourceNames:item.sourceName?[item.sourceName]:[]});
+      if(map.size>=FOF_MAX_CANDIDATES)break;
+    }
+    const candidates=[...map.values()];
+    await chrome.storage.local.set({friendFoFCandidates:candidates,friendFoFCandidateCount:candidates.length});
+    return candidates;
+  }
+
+  async function publishFoFScanState(state,message){
+    if(message)state.status=message;
+    state.updatedAt=Date.now();
+    await chrome.storage.local.set({
+      friendFoFScanState:state,
+      friendFoFScanActive:!!state.active,
+      friendFoFStatus:state.status||"",
+      friendFoFSourceScanned:state.sourceCount||0,
+      friendFoFCandidateCount:state.candidateCount||0
+    });
+  }
+
+  async function readFoFScanState(runId){
+    const stored=await chrome.storage.local.get("friendFoFScanState");
+    const state=stored.friendFoFScanState;
+    if(!state?.active||state.runId!==runId||fofScanStopRequested)return null;
+    return state;
+  }
+
+  async function stopFoFScan(reason,runId=""){
+    const stored=await chrome.storage.local.get("friendFoFScanState");
+    const state=stored.friendFoFScanState||{};
+    if(runId&&state.runId&&state.runId!==runId)return;
+    state.active=false;state.nextAllowedAt=0;fofScanStopRequested=true;
+    await publishFoFScanState(state,reason||t("c.frFoFStopped"));
+  }
+
+  async function recordFoFSourceResult(source,result){
+    const stored=await chrome.storage.local.get("friendFoFSourceResults");
+    const rows=Array.isArray(stored.friendFoFSourceResults)?stored.friendFoFSourceResults:[];
+    const next=rows.filter(row=>row?.key!==source.key);
+    next.push({key:source.key,name:source.name||source.key,url:source.url,status:result.status,count:Math.max(0,parseInt(result.count)||0),updatedAt:Date.now()});
+    await chrome.storage.local.set({friendFoFSourceResults:next.slice(-200)});
+  }
+
+  async function startFoFOwnScan(){
+    const busy=await chrome.storage.local.get(["friendFoFActive","friendFoFScanActive","isRunning","friendConfirmActive","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupCommentActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);
+    if(Object.values(busy).some(Boolean))return {ok:false,error:t("c.frFoFBusy")};
+    const tabId=await ownTabId();
+    const runId=`friend-fof-sources-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    const now=Date.now();
+    const state={active:true,kind:"own",phase:"own-list",runId,ownerTabId:tabId,sourceCount:0,candidateCount:0,scrollRounds:0,stableRounds:0,endConfirmations:0,reloads:0,startedAt:now,waitStartedAt:now,lastDomProgressAt:now,status:t("c.frFoFPreparing")};
+    fofScanStopRequested=false;
+    await chrome.storage.local.set({friendFoFSourceList:[],friendFoFSourceListComplete:false,friendFoFSourceResults:[],friendFoFSourceScanned:0,friendFoFStatus:state.status});
+    await publishFoFScanState(state,state.status);
+    setTimeout(()=>friendFoFScanLoop(runId),100);
+    return {ok:true,runId};
+  }
+
+  function normalizeFoFSource(input={}){
+    const url=fofNormalizeProfileUrl(input.url||"");
+    const key=profileKeyFromHref(url);
+    if(!url||!key)return null;
+    return {key,url,name:cleanText(input.name||"").slice(0,120)};
+  }
+
+  async function startFoFSourceScan(input){
+    const source=normalizeFoFSource(input);
+    if(!source)return {ok:false,error:t("c.frFoFBadSource")};
+    const busy=await chrome.storage.local.get(["friendFoFActive","friendFoFScanActive","isRunning","friendConfirmActive","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupCommentActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);
+    if(Object.values(busy).some(Boolean))return {ok:false,error:t("c.frFoFBusy")};
+    const tabId=await ownTabId();
+    const runId=`friend-fof-source-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    const now=Date.now();
+    const state={active:true,kind:"source",phase:"source-profile",runId,ownerTabId:tabId,source,sourceCount:0,candidateCount:0,listUrl:"",scrollRounds:0,stableRounds:0,endConfirmations:0,reloads:0,startedAt:now,waitStartedAt:now,lastDomProgressAt:now,status:t("c.frFoFPreparing")};
+    fofScanStopRequested=false;
+    await chrome.storage.local.set({friendFoFCandidates:[],friendFoFCandidateCount:0,friendFoFSourceResults:[],friendFoFStatus:state.status});
+    await publishFoFScanState(state,state.status);
+    setTimeout(()=>friendFoFScanLoop(runId),100);
+    return {ok:true,runId};
+  }
+
+  async function finishFoFOwnScan(state,runId,partial=false){
+    state.active=false;state.completed=true;state.partial=!!partial;
+    await chrome.storage.local.set({friendFoFSourceListComplete:!partial,friendFoFSourceScanned:state.sourceCount});
+    await publishFoFScanState(state,partial?t("c.frFoFPartialSources",{n:state.sourceCount}):t("c.frFoFOwnDone",{n:state.sourceCount}));
+    return "stop";
+  }
+
+  async function finishFoFSourceScan(state,partial=false){
+    const count=Math.max(0,parseInt(state.candidateCount)||0);
+    const status=partial?"partial":count?"viewable":"viewable-empty";
+    await recordFoFSourceResult(state.source,{status,count});
+    state.active=false;state.completed=true;state.partial=!!partial;state.sourceStatus=status;
+    await publishFoFScanState(state,partial?t("c.frFoFSourcePartial",{name:state.source.name||state.source.key,n:count}):t("c.frFoFSourceDone",{name:state.source.name||state.source.key,n:count}));
+    return "stop";
+  }
+
+  async function scanFoFOwnList(state,runId){
+    const root=fofFriendsListRoot();
+    if(!root){
+      const elapsed=Date.now()-Number(state.waitStartedAt||state.startedAt||Date.now());
+      if(elapsed<FOF_LIST_WAIT_MS){
+        await publishFoFScanState(state,t("c.frFoFWaitOwn",{s:Math.floor(elapsed/1000)}));
+        await sleep(1800);return "continue";
+      }
+      return finishFoFOwnScan(state,runId,true);
+    }
+    const previous=await loadFoFSourceList();
+    const found=fofCollectListProfiles(root);
+    const merged=await saveFoFSourceList([...previous,...found]);
+    const added=merged.length-previous.length;
+    state.sourceCount=merged.length;
+    state.lastDomProgressAt=Number(state.lastDomProgressAt)||Date.now();
+    state.endConfirmations=Math.max(0,parseInt(state.endConfirmations??state.stableRounds)||0);
+    if(added>0){state.lastDomProgressAt=Date.now();state.endConfirmations=0;}
+    // A hard cap prevents an unexpectedly large/virtualized list from
+    // turning into an unbounded scan. Reaching it is explicitly partial, not
+    // proof that the whole Friends list has been read.
+    if(merged.length>=FOF_MAX_SOURCE_PROFILES)return finishFoFOwnScan(state,runId,true);
+    if(state.scrollRounds>=FOF_MAX_SCROLL_ROUNDS)return finishFoFOwnScan(state,runId,true);
+    // Facebook mounts a loading spinner before it fetches the next batch. The
+    // spinner is a reason to keep scrolling, not a reason to wait in place.
+    // Re-find the root here because storage writes above may span a SPA render.
+    const before=fofScrollList(fofFriendsListRoot()||root);
+    if(!before){await sleep(FOF_SCROLL_POLL_MS);return "continue";}
+    const outcome=await fofWaitForListProgress(runId,before);
+    if(outcome.stopped)return "stop";
+    state.scrollRounds=(parseInt(state.scrollRounds)||0)+1;
+    if(outcome.progressed){
+      state.lastDomProgressAt=Date.now();
+      state.endConfirmations=0;
+    }else if(outcome.snapshot&&!outcome.snapshot.loading&&outcome.snapshot.atBottom){
+      state.endConfirmations+=1;
+    }else state.endConfirmations=0;
+    state.stableRounds=state.endConfirmations;
+    await publishFoFScanState(state,t("c.frFoFScanningOwn",{n:merged.length,r:state.scrollRounds}));
+    if(state.endConfirmations>=FOF_END_CONFIRMATIONS)return finishFoFOwnScan(state,runId,false);
+    if(state.scrollRounds>=FOF_MAX_SCROLL_ROUNDS||Date.now()-state.lastDomProgressAt>=FOF_NO_PROGRESS_TIMEOUT_MS)return finishFoFOwnScan(state,runId,true);
+    return "continue";
+  }
+
+  async function scanFoFSourceList(state,runId){
+    if(!fofSourceFriendsPageMatches(state)){
+      if(state.listUrl){await publishFoFScanState(state,t("c.frFoFReturningSource"));location.assign(state.listUrl);return "navigate";}
+      return stopFoFScan(t("c.frFoFWrongSource"),runId);
+    }
+    if(fofFriendsViewRestricted()){
+      await recordFoFSourceResult(state.source,{status:"restricted",count:0});
+      return stopFoFScan(t("c.frFoFRestricted"),runId);
+    }
+    const root=fofFriendsListRoot();
+    if(!root){
+      const elapsed=Date.now()-Number(state.waitStartedAt||state.startedAt||Date.now());
+      if(elapsed<FOF_LIST_WAIT_MS){await publishFoFScanState(state,t("c.frFoFWaitSource",{s:Math.floor(elapsed/1000)}));await sleep(1800);return "continue";}
+      await recordFoFSourceResult(state.source,{status:"unknown",count:0});
+      return stopFoFScan(t("c.frFoFSourceUnavailable"),runId);
+    }
+    const current=await chrome.storage.local.get("friendFoFCandidates");
+    const previous=Array.isArray(current.friendFoFCandidates)?current.friendFoFCandidates:[];
+    const found=fofCollectListProfiles(root,state.source);
+    const candidates=await saveFoFCandidates([...previous,...found]);
+    const beforeCount=previous.length;
+    state.candidateCount=candidates.length;
+    state.lastDomProgressAt=Number(state.lastDomProgressAt)||Date.now();
+    state.endConfirmations=Math.max(0,parseInt(state.endConfirmations??state.stableRounds)||0);
+    if(candidates.length>beforeCount){state.lastDomProgressAt=Date.now();state.endConfirmations=0;}
+    if(candidates.length>=FOF_MAX_CANDIDATES)return finishFoFSourceScan(state,true);
+    if(state.scrollRounds>=FOF_MAX_SCROLL_ROUNDS)return finishFoFSourceScan(state,true);
+    const before=fofScrollList(fofFriendsListRoot()||root);
+    if(!before){await sleep(FOF_SCROLL_POLL_MS);return "continue";}
+    const outcome=await fofWaitForListProgress(runId,before);
+    if(outcome.stopped)return "stop";
+    state.scrollRounds=(parseInt(state.scrollRounds)||0)+1;
+    if(outcome.progressed){
+      state.lastDomProgressAt=Date.now();
+      state.endConfirmations=0;
+    }else if(outcome.snapshot&&!outcome.snapshot.loading&&outcome.snapshot.atBottom){
+      state.endConfirmations+=1;
+    }else state.endConfirmations=0;
+    state.stableRounds=state.endConfirmations;
+    await publishFoFScanState(state,t("c.frFoFScanningSource",{name:state.source.name||state.source.key,n:candidates.length,r:state.scrollRounds}));
+    if(state.endConfirmations>=FOF_END_CONFIRMATIONS)return finishFoFSourceScan(state,false);
+    if(state.scrollRounds>=FOF_MAX_SCROLL_ROUNDS||Date.now()-state.lastDomProgressAt>=FOF_NO_PROGRESS_TIMEOUT_MS)return finishFoFSourceScan(state,true);
+    return "continue";
+  }
+
+  async function friendFoFScanLoop(runId){
+    if(fofScanLoopActive)return;
+    fofScanLoopActive=true;fofScanLocalRunId=runId;fofScanStopRequested=false;
+    try{
+      while(true){
+        const state=await readFoFScanState(runId);
+        if(!state)return;
+        if(state.kind==="own"){
+          if(!fofIsOwnFriendsRoute()){
+            await publishFoFScanState(state,t("c.frFoFOpeningOwn"));location.assign(fofOwnFriendsUrl());return;
+          }
+          const action=await scanFoFOwnList(state,runId);if(action!=="continue")return;
+          continue;
+        }
+        if(state.phase==="source-profile"){
+          if(!fofSourceProfileEvidence(state.source?.key)){
+            await publishFoFScanState(state,t("c.frFoFOpeningSource",{name:state.source?.name||state.source?.key||""}));
+            location.assign(state.source.url);return;
+          }
+          const link=fofFindFriendsLink(state.source.key);
+          if(link){
+            state.listUrl=fofNormalizeUrlForNavigation(link.href||"")||link.href;
+            state.phase="source-list";state.waitStartedAt=Date.now();state.scrollRounds=0;state.stableRounds=0;state.endConfirmations=0;state.lastDomProgressAt=Date.now();
+            await publishFoFScanState(state,t("c.frFoFOpeningFriends",{name:state.source.name||state.source.key}));
+            location.assign(state.listUrl);return;
+          }
+          const elapsed=Date.now()-Number(state.waitStartedAt||state.startedAt||Date.now());
+          if(elapsed<FOF_SOURCE_WAIT_MS){await publishFoFScanState(state,t("c.frFoFWaitFriendsLink",{s:Math.floor(elapsed/1000)}));await sleep(1800);continue;}
+          await recordFoFSourceResult(state.source,{status:"restricted",count:0});
+          await stopFoFScan(t("c.frFoFNoFriendsLink"),runId);return;
+        }
+        const action=await scanFoFSourceList(state,runId);if(action!=="continue")return;
+      }
+    }catch(error){
+      console.error("[FriendFoFScan]",error);
+      await stopFoFScan(t("c.frFoFError",{err:error.message}),runId);
+    }finally{
+      fofScanLoopActive=false;
+      if(fofScanLocalRunId===runId)fofScanLocalRunId="";
+      const next=(await chrome.storage.local.get("friendFoFScanState")).friendFoFScanState;
+      if(next?.active&&next.runId&&next.runId!==runId)setTimeout(()=>friendFoFScanLoop(next.runId),0);
+    }
+  }
+
+  async function loadFoFHistory(){
+    const stored=await chrome.storage.local.get("friendFoFHistory");
+    const history=stored.friendFoFHistory&&typeof stored.friendFoFHistory==="object"?stored.friendFoFHistory:{};
+    return history;
+  }
+
+  async function saveFoFHistory(history){
+    await chrome.storage.local.set({friendFoFHistory:history});
+  }
+
+  async function publishFoFSendState(state,message){
+    if(message)state.status=message;
+    state.updatedAt=Date.now();
+    await chrome.storage.local.set({friendFoFRunState:state,friendFoFActive:!!state.active,friendFoFSent:state.sentCount||0,friendFoFSkipped:state.skippedCount||0,friendFoFUncertain:state.uncertainCount||0,friendFoFStatus:state.status||""});
+  }
+
+  async function readFoFSendState(runId){
+    const stored=await chrome.storage.local.get(["friendFoFRunState","friendFoFActive"]);
+    const state=stored.friendFoFRunState;
+    if(!state?.active||!stored.friendFoFActive||state.runId!==runId||fofSendStopRequested)return null;
+    return state;
+  }
+
+  // Facebook often completes location.assign() as an SPA transition, so the
+  // content script survives while the current DOM is replaced. Keep the
+  // write-ahead run alive and re-enter the same owner tab after that route
+  // transition instead of requiring another popup click.
+  function scheduleFoFSendResume(runId,delay=1600){
+    if(fofSendResumeTimer)clearTimeout(fofSendResumeTimer);
+    fofSendResumeTimer=setTimeout(async()=>{
+      fofSendResumeTimer=0;
+      try{
+        const stored=await chrome.storage.local.get(["friendFoFRunState","friendFoFActive"]);
+        const state=stored.friendFoFRunState;
+        if(!state?.active||!stored.friendFoFActive||state.runId!==runId||fofSendStopRequested)return;
+        const tabId=await ownTabId();
+        if(state.ownerTabId&&tabId&&state.ownerTabId!==tabId)return;
+        if(fofSendLoopActive){scheduleFoFSendResume(runId,500);return;}
+        friendFoFSendLoop(runId);
+      }catch(error){
+        console.error("[FriendFoFResume]",error);
+      }
+    },Math.max(0,delay));
+  }
+
+  async function stopFoFSend(reason,runId=""){
+    const stored=await chrome.storage.local.get("friendFoFRunState");
+    const state=stored.friendFoFRunState||{};
+    if(runId&&state.runId&&state.runId!==runId)return;
+    if(fofSendResumeTimer){clearTimeout(fofSendResumeTimer);fofSendResumeTimer=0;}
+    state.active=false;state.nextAllowedAt=0;fofSendStopRequested=true;
+    await publishFoFSendState(state,reason||t("c.frFoFStopped"));
+  }
+
+  function fofSendRestriction(){
+    if(/checkpoint|login|recover/i.test(location.pathname))return t("c.frLogin");
+    const text=[...document.querySelectorAll('[role="alert"],[role="status"],[role="dialog"]')].filter(isVisible).map(el=>lower(el.innerText||el.textContent)).join(" ");
+    if(/tạm thời bị chặn|không thể gửi lời mời kết bạn|friend request limit|temporarily blocked|you can.t send friend requests|verify your identity|xác minh tài khoản/.test(text))return t("c.frLimited");
+    return "";
+  }
+
+  // Streaming Friends-list sending. Resolve a single-profile card for every
+  // action/proof; an ancestor containing another profile is never a card.
+  function fofStreamCard(root,key){
+    if(!root||!key)return null;
+    for(const link of fofProfileLinks(root)){
+      if(profileKeyFromHref(link.href)!==key)continue;
+      for(let node=link.parentElement,depth=0;node&&node!==root&&depth<14;node=node.parentElement,depth++){
+        const keys=new Set(fofProfileLinks(node).map(a=>profileKeyFromHref(a.href)));
+        if(keys.size!==1||!keys.has(key))break;
+        if(node.querySelector('button,[role="button"]'))return node;
+      }
+    }
+    return null;
+  }
+
+  function fofStreamRelationship(card){
+    if(!card)return false;
+    return [...card.querySelectorAll('button,[role="button"],a[role="link"]')].some(button=>{
+      const label=lower(buttonLabel(button));
+      return isPendingFriendLabel(label)||/^(?:bạn bè|đã là bạn bè|already friends?|friends|đã gửi lời mời kết bạn|hủy lời mời kết bạn|cancel friend request)$/.test(label);
+    });
+  }
+
+  function fofStreamButton(root,key){
+    const card=fofStreamCard(root,key);
+    if(!card||fofStreamRelationship(card)||card.closest('[role="dialog"],[role="menu"]'))return null;
+    return [...card.querySelectorAll('button,[role="button"]')].find(isExactAddFriendButton)||null;
+  }
+
+  async function startFoFSend(input={}){
+    const source=normalizeFoFSource(input.source||{});
+    if(!source)return {ok:false,error:t("c.frFoFBadSource")};
+    const stored=await chrome.storage.local.get(["friendFoFActive","friendFoFScanActive","isRunning","friendConfirmActive","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupCommentActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);
+    if(Object.values(stored).some(Boolean))return {ok:false,error:t("c.frFoFBusy")};
+    const tabId=await ownTabId();
+    const minDelay=Math.max(1000,parseInt(input.minDelay)||5000),maxDelay=Math.max(minDelay,parseInt(input.maxDelay)||15000);
+    const maxRequests=Math.max(1,Math.min(100,parseInt(input.maxRequests)||20));
+    const runId="friend-fof-stream-"+Date.now()+"-"+Math.random().toString(36).slice(2,8);
+    const state={active:true,stream:true,source,listUrl:"",phase:"source-profile",runId,ownerTabId:tabId,
+      config:{mode:MODE_FRIEND_OF_FRIEND,minDelay,maxDelay,maxRequests},
+      sentCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],currentCandidateKey:"",currentStage:"",
+      scrollRounds:0,endConfirmations:0,lastDomProgressAt:Date.now(),waitStartedAt:Date.now(),
+      nextAllowedAt:Date.now()+rand(minDelay,maxDelay),startedAt:Date.now(),status:t("c.frFoFPreparingSend")};
+    if(fofSendResumeTimer){clearTimeout(fofSendResumeTimer);fofSendResumeTimer=0;}
+    fofSendStopRequested=false;
+    await publishFoFSendState(state,state.status);
+    setTimeout(()=>friendFoFSendLoop(runId),100);
+    return {ok:true,runId};
+  }
+
+  async function waitFoFSendSchedule(runId){
+    while(true){
+      const state=await readFoFSendState(runId);if(!state)return false;
+      const remain=(parseInt(state.nextAllowedAt)||0)-Date.now();if(remain<=0)return true;
+      const seconds=Math.max(1,Math.ceil(remain/1000));
+      if(state.lastShownSecond!==seconds){state.lastShownSecond=seconds;await publishFoFSendState(state,t("c.frFoFWaitSend",{s:seconds,from:state.sentCount,to:state.config.maxRequests}));}
+      await sleep(Math.min(500,remain));
+    }
+  }
+
+  async function fofStreamWait(runId,ms){
+    const end=Date.now()+ms;
+    while(Date.now()<end){
+      if(!await readFoFSendState(runId))return false;
+      await sleep(Math.min(500,end-Date.now()));
+    }
+    return !!await readFoFSendState(runId);
+  }
+
+  async function fofStreamAttempt(candidate,state,runId){
+    let button=fofStreamButton(fofFriendsListRoot(),candidate.key);
+    if(!button)return "skipped";
+    button.scrollIntoView({behavior:"instant",block:"center"});
+    if(!await fofStreamWait(runId,500))return "stopped";
+    // Durable write-ahead guard survives Stop, Reset, reload and a new run.
+    const history=await loadFoFHistory();
+    if(history[candidate.key])return "skipped";
+    history[candidate.key]={status:"uncertain",time:Date.now()};
+    await saveFoFHistory(history);
+    state.currentCandidateKey=candidate.key;state.currentStage="armed";
+    await publishFoFSendState(state,t("c.frFoFSending",{name:candidate.name||candidate.key}));
+    if(!await readFoFSendState(runId))return "stopped";
+    if(fofSendRestriction()||!fofSourceFriendsPageMatches(state)||fofFriendsViewRestricted())return "blocked";
+    if([...document.querySelectorAll('[role="dialog"],[role="menu"]')].some(isVisible))return "uncertain";
+    button=fofStreamButton(fofFriendsListRoot(),candidate.key);
+    if(!button||!button.isConnected||!isExactAddFriendButton(button))return "uncertain";
+    // Synchronous dispatch after the final label check: no coordinate retry
+    // or fallback can hit a replacement Cancel Request button.
+    button.click();
+    for(let i=0;i<24;i++){
+      if(!await fofStreamWait(runId,500))return "stopped";
+      if(fofSendRestriction())return "blocked";
+      if(!fofSourceFriendsPageMatches(state)||fofFriendsViewRestricted())return "uncertain";
+      const card=fofStreamCard(fofFriendsListRoot(),candidate.key);
+      if(fofStreamRelationship(card))return "confirmed";
+      // A confirmation dialog requires attention; never click unrelated
+      // global dialog controls or infer success from another card/toast.
+      if([...document.querySelectorAll('[role="dialog"]')].some(isVisible))return "uncertain";
+    }
+    return "uncertain";
+  }
+
+  async function friendFoFSendLoop(runId){
+    if(fofSendLoopActive)return;
+    fofSendLoopActive=true;fofSendLocalRunId=runId;fofSendStopRequested=false;
+    try{
+      while(true){
+        let state=await readFoFSendState(runId);if(!state)return;
+        // Old preview jobs must be explicitly restarted with a chosen source.
+        if(!state.stream||!state.source){await stopFoFSend(t("c.frFoFBadSource"),runId);return;}
+        const restriction=fofSendRestriction();
+        if(restriction){await stopFoFSend(restriction,runId);return;}
+        if(state.sentCount>=state.config.maxRequests){await stopFoFSend(t("c.frFoFDone",{from:state.sentCount,to:state.config.maxRequests}),runId);return;}
+        if(state.phase==="source-profile"){
+          if(fofCurrentProfileKey()!==state.source.key){
+            await publishFoFSendState(state,t("c.frFoFOpeningSource",{name:state.source.name||state.source.key}));
+            if(!await readFoFSendState(runId))return;
+            scheduleFoFSendResume(runId);
+            location.assign(state.source.url);return;
+          }
+          const link=fofFindFriendsLink(state.source.key);
+          if(!link){
+            if(Date.now()-state.waitStartedAt>FOF_SOURCE_WAIT_MS){await stopFoFSend(t("c.frFoFNoFriendsLink"),runId);return;}
+            if(!await fofStreamWait(runId,1000))return;
+            continue;
+          }
+          const listUrl=fofNormalizeUrlForNavigation(link.href);
+          if(!listUrl||fofProfileKeyFromFriendsUrl(listUrl)!==state.source.key){await stopFoFSend(t("c.frFoFWrongSource"),runId);return;}
+          state.listUrl=listUrl;state.phase="source-list";state.waitStartedAt=Date.now();
+          await publishFoFSendState(state,t("c.frFoFOpeningFriends",{name:state.source.name||state.source.key}));
+          if(!await readFoFSendState(runId))return;
+          scheduleFoFSendResume(runId);
+          location.assign(listUrl);return;
+        }
+        if(!fofSourceFriendsPageMatches(state)){
+          state.waitStartedAt=Date.now();
+          await publishFoFSendState(state,t("c.frFoFReturningSource"));
+          if(!await readFoFSendState(runId))return;
+          scheduleFoFSendResume(runId);
+          location.assign(state.listUrl);return;
+        }
+        if(fofFriendsViewRestricted()){await stopFoFSend(t("c.frFoFRestricted"),runId);return;}
+        let root=fofFriendsListRoot();
+        if(!root){
+          if(Date.now()-state.waitStartedAt>FOF_LIST_WAIT_MS){await stopFoFSend(t("c.frFoFSourceUnavailable"),runId);return;}
+          if(!await fofStreamWait(runId,1000))return;
+          continue;
+        }
+        const history=await loadFoFHistory();
+        const seen=new Set(state.attemptedKeys||[]);
+        const profiles=fofCollectListProfiles(root,state.source);
+        let candidate=null;
+        let historyChanged=false;
+        for(const profile of profiles){
+          if(history[profile.key]||seen.has(profile.key))continue;
+          const card=fofStreamCard(root,profile.key);
+          if(fofStreamRelationship(card)){
+            // Persist visible Friends/Pending state too. Facebook may later
+            // rerender the card without the relationship label; the durable
+            // guard must still prevent a second invite or a cancel click.
+            history[profile.key]={status:"existing",time:Date.now(),name:profile.name||profile.key};
+            historyChanged=true;
+            seen.add(profile.key);state.skippedCount++;
+          }else if(fofStreamButton(root,profile.key)){candidate=profile;break;}
+        }
+        if(historyChanged)await saveFoFHistory(history);
+        state.attemptedKeys=[...seen];
+        if(candidate){
+          state.endConfirmations=0;state.lastDomProgressAt=Date.now();
+          await publishFoFSendState(state);
+          if(!await waitFoFSendSchedule(runId))return;
+          state=await readFoFSendState(runId);if(!state)return;
+          // The card is resolved again after the delay in fofStreamAttempt.
+          const result=await fofStreamAttempt(candidate,state,runId);
+          state=await readFoFSendState(runId);if(!state||result==="stopped")return;
+          if(result==="blocked"){await stopFoFSend(fofSendRestriction()||t("c.frWarnShown"),runId);return;}
+          const latest=await loadFoFHistory();
+          if(result==="confirmed"){
+            latest[candidate.key]={status:"confirmed",time:Date.now()};
+            await saveFoFHistory(latest);state.sentCount++;
+          }else if(result==="uncertain"){
+            state.uncertainCount++;
+          }else state.skippedCount++;
+          state.attemptedKeys=[...new Set([...(state.attemptedKeys||[]),candidate.key])];
+          state.currentCandidateKey="";state.currentStage="";
+          state.nextAllowedAt=Date.now()+rand(state.config.minDelay,state.config.maxDelay);
+          state.lastDomProgressAt=Date.now();
+          await publishFoFSendState(state,result==="confirmed"?t("c.frFoFConfirmed",{from:state.sentCount,to:state.config.maxRequests,name:candidate.name||candidate.key}):t("c.frFoFUncertain",{name:candidate.name||candidate.key}));
+          if(result==="uncertain"){await stopFoFSend(t("c.frFoFUncertain",{name:candidate.name||candidate.key}),runId);return;}
+          continue;
+        }
+        if(!await readFoFSendState(runId))return;
+        root=fofFriendsListRoot();
+        const before=fofScrollList(root);
+        if(!await fofStreamWait(runId,FOF_SCROLL_PROGRESS_WAIT_MS))return;
+        if(!fofSourceFriendsPageMatches(state)||fofFriendsViewRestricted())continue;
+        const after=fofListSnapshot(fofFriendsListRoot());
+        const progressed=fofListAdvanced(before,after);
+        state.scrollRounds++;
+        if(progressed){state.lastDomProgressAt=Date.now();state.endConfirmations=0;}
+        else if(after?.atBottom&&!after.loading)state.endConfirmations++;
+        else state.endConfirmations=0;
+        await publishFoFSendState(state,t("c.frFoFStreaming",{n:state.sentCount,r:state.scrollRounds}));
+        if(state.endConfirmations>=FOF_END_CONFIRMATIONS){await stopFoFSend(t("c.frFoFNoMore",{from:state.sentCount,to:state.config.maxRequests}),runId);return;}
+        if(state.scrollRounds>=FOF_MAX_SCROLL_ROUNDS||Date.now()-state.lastDomProgressAt>=FOF_NO_PROGRESS_TIMEOUT_MS){
+          await stopFoFSend(t("c.frFoFStreamPartial"),runId);return;
+        }
+      }
+    }catch(error){
+      await stopFoFSend(t("c.frFoFError",{err:error.message}),runId);
+    }finally{
+      fofSendLoopActive=false;
+      if(fofSendLocalRunId===runId)fofSendLocalRunId="";
+      const next=(await chrome.storage.local.get("friendFoFRunState")).friendFoFRunState;
+      if(next?.active&&next.runId&&next.runId!==runId)setTimeout(()=>friendFoFSendLoop(next.runId),0);
+    }
+  }
+
+  async function resetFoFRun(reason){
+    if(fofSendResumeTimer){clearTimeout(fofSendResumeTimer);fofSendResumeTimer=0;}
+    fofSendStopRequested=true;
+    const saved=await chrome.storage.local.get("friendFoFRunState");
+    const state=saved.friendFoFRunState&&typeof saved.friendFoFRunState==="object"?{...saved.friendFoFRunState,active:false,nextAllowedAt:0,candidateIndex:0,sentCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],currentCandidateKey:"",currentStage:""}:{active:false,candidateIndex:0,sentCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],currentCandidateKey:"",currentStage:""};
+    await publishFoFSendState(state,reason||t("c.frFoFReset"));
+  }
+
   // ---- Incoming friend-request confirmation: separate state machine ----
   // This flow intentionally does not reuse outgoing-invite selectors, counters,
   // history or proof. It only reads public UI text exposed by Facebook.
@@ -638,28 +1455,6 @@
     return best;
   }
 
-  function hasRenderableProfileImage(root){
-    if(!root?.querySelectorAll)return false;
-    if(root.querySelector("img[src]"))return true;
-    return [...root.querySelectorAll("svg image")]
-      .some(image=>!!(image.getAttribute("href")||image.getAttribute("xlink:href")));
-  }
-
-  function confirmProfileHasPhoto(root,profileKey){
-    if(!root?.querySelectorAll||!profileKey)return false;
-    return [...root.querySelectorAll("a[href]")]
-      .some(link=>profileKeyFromHref(link.href||"")===profileKey&&hasRenderableProfileImage(link));
-  }
-
-  function confirmProfileHasPhotoNear(button,profileKey,sourceRoot){
-    let node=button?.parentElement;
-    for(let depth=0;node&&node!==sourceRoot&&depth<14;depth++,node=node.parentElement){
-      if(rawConfirmButtons(node).length>1)return false;
-      if(confirmProfileHasPhoto(node,profileKey))return true;
-    }
-    return false;
-  }
-
   function confirmCandidateFromButton(button,sourceRoot){
     if(!isExactConfirmButton(button)||button.closest('[role="dialog"],[role="menu"]'))return null;
     const main=sourceRoot||document.querySelector('div[role="main"],main');
@@ -675,19 +1470,9 @@
       const name=(linkText||cardText.split(" ").slice(0,8).join(" ")).slice(0,120);
       const mutualMatch=cardText.match(/(?:^|\s)(\d{1,4})\s+(?:bạn chung|mutual friends?)(?:\s|$)/i)
         ||cardText.match(/(?:có|has)\s+(\d{1,4})\s+(?:bạn chung|mutual friends?)/i);
-      const groupMatch=cardText.match(/(?:^|\s)(\d{1,4})\s+(?:nhóm chung|common groups?|groups in common)(?:\s|$)/i);
-      const schoolMarker=/(?:học tại|đã học tại|trường học|cùng học|studied at|went to|school together|common school)/i.test(cardText);
-      const hometownMarker=/(?:quê quán|đến từ|sống tại|hometown|from\s+[A-ZÀ-Ỹ][\p{L}\s.'-]{2,80}|lives in\s+[A-ZÀ-Ỹ][\p{L}\s.'-]{2,80})/iu.test(cardText);
-      const profilePhoto=confirmProfileHasPhotoNear(button,key,main);
       return {
         key,name,url:link.href,button,card:node,
-        mutualCount:mutualMatch?parseInt(mutualMatch[1]):null,
-        commonGroupCount:groupMatch?parseInt(groupMatch[1]):null,
-        hometownText:hometownMarker?cardText:"",
-        schoolText:schoolMarker?cardText:"",
-        hasProfilePhoto:profilePhoto,
-        hometownKnown:hometownMarker,
-        schoolKnown:schoolMarker
+        mutualCount:mutualMatch?parseInt(mutualMatch[1]):null
       };
     }
     return null;
@@ -720,64 +1505,11 @@
   }
 
   function evaluateConfirmCandidate(candidate,filters){
-    const reasonCodes=[];
-    let rejected=false;
-    let unknown=false;
-    const keyword=value=>lower(value).replace(/\s+/g," ");
-    const hometown=keyword(filters.hometown);
-    const school=keyword(filters.school);
     if(filters.minMutual>0){
-      if(candidate.mutualCount==null){unknown=true;reasonCodes.push("mutual-unknown");}
-      else if(candidate.mutualCount<filters.minMutual){rejected=true;reasonCodes.push("mutual-too-low");}
+      if(candidate.mutualCount==null)return {decision:"reject",reasonCodes:["mutual-unknown"]};
+      if(candidate.mutualCount<filters.minMutual)return {decision:"reject",reasonCodes:["mutual-too-low"]};
     }
-    if(hometown){
-      if(!candidate.hometownKnown){unknown=true;reasonCodes.push("hometown-unknown");}
-      else if(!keyword(candidate.hometownText).includes(hometown)){rejected=true;reasonCodes.push("hometown-mismatch");}
-    }
-    if(filters.minCommonGroups>0){
-      if(candidate.commonGroupCount==null){unknown=true;reasonCodes.push("groups-unknown");}
-      else if(candidate.commonGroupCount<filters.minCommonGroups){rejected=true;reasonCodes.push("groups-too-few");}
-    }
-    if(school){
-      if(!candidate.schoolKnown){unknown=true;reasonCodes.push("school-unknown");}
-      else if(!keyword(candidate.schoolText).includes(school)){rejected=true;reasonCodes.push("school-mismatch");}
-    }
-    if(filters.requirePhoto&&!candidate.hasProfilePhoto){rejected=true;reasonCodes.push("photo-missing");}
-    if(rejected)return {decision:"reject",reasonCodes};
-    if(unknown&&filters.skipUnknown)return {decision:"unknown",reasonCodes};
-    if(!reasonCodes.length)reasonCodes.push("eligible");
-    return {decision:"pass",reasonCodes};
-  }
-
-  function confirmFiltersNeedProfile(filters){
-    return !!(filters.hometown||filters.school||filters.minCommonGroups>0||filters.minMutual>0);
-  }
-
-  function readConfirmProfileEvidence(){
-    const main=findConfirmSourceRoot()||document.body;
-    const text=cleanText(main?.innerText||main?.textContent).slice(0,60000);
-    const mutualMatch=text.match(/(?:^|\s)(\d{1,4})\s+(?:bạn chung|mutual friends?)(?:\s|$)/i)
-      ||text.match(/(?:có|has)\s+(\d{1,4})\s+(?:bạn chung|mutual friends?)/i);
-    const groupMatch=text.match(/(?:^|\s)(\d{1,4})\s+(?:nhóm chung|common groups?|groups in common)(?:\s|$)/i);
-    const schoolKnown=/(?:học tại|đã học tại|trường học|cùng học|studied at|went to|school together|common school)/i.test(text);
-    const hometownKnown=/(?:quê quán|đến từ|sống tại|hometown|from\s+[A-ZÀ-Ỹ][\p{L}\s.'-]{2,80}|lives in\s+[A-ZÀ-Ỹ][\p{L}\s.'-]{2,80})/iu.test(text);
-    return {
-      mutualCount:mutualMatch?parseInt(mutualMatch[1]):null,
-      commonGroupCount:groupMatch?parseInt(groupMatch[1]):null,
-      hometownText:hometownKnown?text:"",
-      schoolText:schoolKnown?text:"",
-      hometownKnown,schoolKnown,
-      hasProfilePhoto:confirmProfileHasPhoto(main,profileKeyFromHref(location.href||""))
-    };
-  }
-
-  function applyConfirmProfileEvidence(candidate,evidence){
-    if(!evidence)return;
-    if(candidate.mutualCount==null&&evidence.mutualCount!=null)candidate.mutualCount=evidence.mutualCount;
-    if(candidate.commonGroupCount==null&&evidence.commonGroupCount!=null)candidate.commonGroupCount=evidence.commonGroupCount;
-    if(!candidate.hometownKnown&&evidence.hometownKnown){candidate.hometownKnown=true;candidate.hometownText=evidence.hometownText;}
-    if(!candidate.schoolKnown&&evidence.schoolKnown){candidate.schoolKnown=true;candidate.schoolText=evidence.schoolText;}
-    if(evidence.hasProfilePhoto)candidate.hasProfilePhoto=true;
+    return {decision:"pass",reasonCodes:["eligible"]};
   }
 
   function collectConfirmCandidates(state,history){
@@ -788,7 +1520,6 @@
     for(const button of rawConfirmButtons(main)){
       const candidate=confirmCandidateFromButton(button,main);
       if(!candidate||attempted.has(candidate.key)||history[candidate.key])continue;
-      applyConfirmProfileEvidence(candidate,state.profileEvidenceByKey?.[candidate.key]);
       const evaluated=evaluateConfirmCandidate(candidate,state.config.filters);
       Object.assign(candidate,evaluated);
       if(!map.has(candidate.key))map.set(candidate.key,candidate);
@@ -817,6 +1548,27 @@
       .filter(isVisible).map(el=>lower(el.innerText||el.textContent)).join(" ");
     if(/tạm thời bị chặn|không thể xác nhận|không thể chấp nhận|temporarily blocked|you can.t confirm|can.t accept|verify your identity|xác minh tài khoản/.test(text))return t("c.frConfirmLimited");
     return "";
+  }
+
+  function confirmLiveMessages(){
+    return [...document.querySelectorAll('[role="alert"],[role="status"],[aria-live="polite"],[aria-live="assertive"]')]
+      .filter(isVisible).map(el=>lower(el.innerText||el.textContent)).filter(Boolean);
+  }
+
+  function confirmCardShowsAccepted(profileKey){
+    if(!profileKey)return false;
+    const root=findConfirmSourceRoot()||document.body;
+    const accepted=/(?:đã xác nhận|đã chấp nhận lời mời kết bạn|bây giờ là bạn bè|request accepted|you are now friends|now friends)/i;
+    for(const link of [...root.querySelectorAll('a[href]')]){
+      if(profileKeyFromHref(link.href||"")!==profileKey)continue;
+      let node=link.parentElement;
+      for(let depth=0;node&&node!==root&&depth<10;depth++,node=node.parentElement){
+        // A request card is a small subtree with at most its own action. Do
+        // not accept a matching phrase inherited from the whole request list.
+        if(rawConfirmButtons(node).length<=1&&accepted.test(cleanText(node.innerText||node.textContent)))return true;
+      }
+    }
+    return false;
   }
 
   async function publishConfirmState(state,message){
@@ -866,50 +1618,21 @@
 
   async function attemptConfirmCandidate(candidate,runId){
     if(!await readConfirmActiveState(runId))return {kind:"stopped"};
-    const beforeAlerts=new Set([...document.querySelectorAll('[role="alert"],[role="status"]')]
-      .filter(isVisible).map(el=>lower(el.innerText||el.textContent)).filter(Boolean));
+    const beforeAlerts=new Set(confirmLiveMessages());
     candidate.button.style.outline="3px solid #00a400";
     if(!await trustedClick(candidate.button))return {kind:"failed",message:t("c.frConfirmNoBtn")};
     for(let i=0;i<30;i++){
       if(!await readConfirmActiveState(runId))return {kind:"stopped"};
       const restriction=confirmRestriction();
       if(restriction)return {kind:"blocked",message:restriction};
-      const label=buttonLabel(candidate.button);
-      const cardText=cleanText(candidate.card?.innerText||candidate.card?.textContent);
-      const successAlert=[...document.querySelectorAll('[role="alert"],[role="status"]')]
-        .filter(isVisible).map(el=>lower(el.innerText||el.textContent))
+      const successAlert=confirmLiveMessages()
         .some(text=>!beforeAlerts.has(text)&&/(?:đã xác nhận|đã chấp nhận|bây giờ là bạn bè|request accepted|you are now friends|now friends)/.test(text));
-      const becameFriends=/(?:^|\s)(?:bạn bè|đã là bạn bè|friends)(?:\s|$)/i.test(lower(label))
-        ||/(?:^|\s)(?:bạn bè|đã là bạn bè|friends)(?:\s|$)/i.test(lower(cardText));
-      if(successAlert||becameFriends)return {kind:"confirmed"};
+      // Facebook commonly destroys the old card/button node on confirmation.
+      // Re-find the profile card by key rather than reading the stale button.
+      if(successAlert||confirmCardShowsAccepted(candidate.key))return {kind:"confirmed"};
       await sleep(500);
     }
     return {kind:"uncertain",message:t("c.frConfirmNoProof")};
-  }
-
-  function isPendingConfirmProfile(pending){
-    const currentKey=profileKeyFromHref(location.href||"");
-    if(currentKey&&currentKey===pending?.key)return true;
-    try{
-      const current=new URL(location.href,location.origin);
-      const target=new URL(pending?.url||"",location.origin);
-      if(current.origin!==target.origin)return false;
-      const currentId=current.searchParams.get("id");
-      const targetId=target.searchParams.get("id");
-      if(currentId&&targetId)return currentId===targetId;
-      const currentPath=current.pathname.replace(/\/+$/,"").toLocaleLowerCase("vi");
-      const targetPath=target.pathname.replace(/\/+$/,"").toLocaleLowerCase("vi");
-      return currentPath===targetPath&&currentPath!=="/profile.php"&&!!profileKeyFromHref(current.href);
-    }catch{return false;}
-  }
-
-  async function waitForPendingConfirmProfile(pending,runId){
-    for(let i=0;i<24;i++){
-      if(isPendingConfirmProfile(pending))return true;
-      if(isConfirmSource()||!await readConfirmActiveState(runId))return false;
-      await sleep(250);
-    }
-    return isPendingConfirmProfile(pending);
   }
 
   async function friendConfirmLoop(runId){
@@ -921,38 +1644,10 @@
       while(true){
         let state=await readConfirmActiveState(runId);
         if(!state)return;
-        if(state.stage==="inspect-profile"&&state.pendingProfile?.key){
-          const pending=state.pendingProfile;
-          const inspectRestriction=confirmRestriction();
-          if(inspectRestriction){await stopConfirmRun(inspectRestriction,runId);return;}
-          const onPendingProfile=!isConfirmSource()&&await waitForPendingConfirmProfile(pending,runId);
-          state=await readConfirmActiveState(runId);
-          if(!state)return;
-          if(onPendingProfile){
-            state.profileEvidenceByKey=state.profileEvidenceByKey&&typeof state.profileEvidenceByKey==="object"?state.profileEvidenceByKey:{};
-            state.profileEvidenceByKey[pending.key]=readConfirmProfileEvidence();
-            state.stage="returning-list";
-            await publishConfirmState(state,t("c.frConfirmReturning"));
-            location.assign(pending.returnUrl||confirmTargetUrl());
-            return;
-          }
-          if(!isConfirmSource()){
-            const openAttempts=parseInt(pending.openAttempts)||0;
-            if(openAttempts>=1){await stopConfirmRun(t("c.frConfirmProfileMismatch"),runId);return;}
-            pending.openAttempts=openAttempts+1;
-            state.pendingProfile=pending;
-            await publishConfirmState(state,t("c.frConfirmInspecting"));
-            location.assign(pending.url);
-            return;
-          }
-          state.stage="list";
-          state.pendingProfile=null;
-          await publishConfirmState(state);
-          continue;
-        }
-        if(state.stage==="returning-list"&&isConfirmSource()){
-          state.stage="list";
-          state.pendingProfile=null;
+        // A resume can run before the popup's Start command replaces its
+        // provisional config. Normalize before any filter field is read.
+        if(!state.config?.filters){
+          state.config=normalizeConfirmConfig(state.config||{});
           await publishConfirmState(state);
         }
         if(state.acceptedCount>=state.config.maxRequests){await stopConfirmRun(t("c.frConfirmDone",{from:state.acceptedCount,to:state.config.maxRequests}),runId);return;}
@@ -995,15 +1690,6 @@
         const candidate=found.candidates[0];
         state.attemptedKeys=[...(state.attemptedKeys||[]),candidate.key].slice(-1000);
         if(candidate.decision!=="pass"){
-          const alreadyInspected=Object.prototype.hasOwnProperty.call(state.profileEvidenceByKey||{},candidate.key);
-          if(candidate.decision==="unknown"&&confirmFiltersNeedProfile(state.config.filters)&&candidate.url&&!alreadyInspected){
-            state.attemptedKeys=state.attemptedKeys.slice(0,-1);
-            state.stage="inspect-profile";
-            state.pendingProfile={key:candidate.key,url:candidate.url,returnUrl:location.href,openAttempts:0};
-            await publishConfirmState(state,t("c.frConfirmInspecting"));
-            location.assign(candidate.url);
-            return;
-          }
           state.skippedCount=(parseInt(state.skippedCount)||0)+1;
           history[candidate.key]={status:candidate.decision,time:Date.now()};
           await saveConfirmHistory(history);
@@ -1042,16 +1728,23 @@
     }finally{
       confirmLoopActive=false;
       if(confirmLocalRunId===runId)confirmLocalRunId="";
+      // Resume and Start can overlap after navigation. When the old loop
+      // releases the lock, continue the newer active run automatically.
+      const next=await chrome.storage.local.get("friendConfirmRunState");
+      const nextRun=next.friendConfirmRunState;
+      if(nextRun?.active&&nextRun.runId&&nextRun.runId!==runId){
+        setTimeout(()=>friendConfirmLoop(nextRun.runId),0);
+      }
     }
   }
 
   async function startFriendConfirm(inputConfig){
-    const other=await chrome.storage.local.get(["isRunning","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);
+    const other=await chrome.storage.local.get(["isRunning","friendFoFActive","friendFoFScanActive","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);
     if(Object.values(other).some(Boolean))return {ok:false,error:t("c.frBusyOther")};
     const config=normalizeConfirmConfig(inputConfig);
     const tabId=await ownTabId();
     const runId=`friend-confirm-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-    const state={active:true,runId,ownerTabId:tabId,mode:MODE_CONFIRM,config,acceptedCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],emptyRounds:0,sourceReloads:0,nextAllowedAt:Date.now()+rand(config.minDelay,config.maxDelay),stage:"list",pendingProfile:null,profileEvidenceByKey:{},status:t("c.frConfirmPreparing"),startedAt:Date.now()};
+    const state={active:true,runId,ownerTabId:tabId,mode:MODE_CONFIRM,config,acceptedCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],emptyRounds:0,sourceReloads:0,nextAllowedAt:Date.now()+rand(config.minDelay,config.maxDelay),status:t("c.frConfirmPreparing"),startedAt:Date.now()};
     confirmStopRequested=false;
     await publishConfirmState(state,state.status);
     setTimeout(()=>friendConfirmLoop(runId),100);
@@ -1065,7 +1758,7 @@
     const history=await loadConfirmHistory();
     const found=collectConfirmCandidates(state,history);
     highlightConfirmCandidates(found.candidates);
-    return {ok:true,count:found.candidates.length,sourceReady:found.ready,candidates:found.candidates.slice(0,50).map(candidate=>({key:candidate.key,name:candidate.name,mutualCount:candidate.mutualCount,commonGroupCount:candidate.commonGroupCount,decision:candidate.decision,reasonCodes:candidate.reasonCodes}))};
+    return {ok:true,count:found.candidates.length,sourceReady:found.ready,candidates:found.candidates.slice(0,50).map(candidate=>({key:candidate.key,name:candidate.name,mutualCount:candidate.mutualCount,decision:candidate.decision,reasonCodes:candidate.reasonCodes}))};
   }
 
   async function friendLoop(runId){
@@ -1148,12 +1841,23 @@
     }finally{
       loopActive=false;
       if(localRunId===runId)localRunId="";
+      // Popup luôn persist run trước khi đưa tab tới trang Gợi ý. Lúc trang
+      // vừa tải, resume của run cũ và lệnh Start mới có thể chồng nhau: run
+      // mới thấy `loopActive` rồi trả về, còn run cũ chỉ kết thúc sau đó. Nếu
+      // không handoff ở đây, state mới bị kẹt mãi ở "Đang chuẩn bị nguồn" dù
+      // Facebook đã có các nút Thêm bạn bè hợp lệ.
+      const next=await chrome.storage.local.get("friendRunState");
+      const nextRun=next.friendRunState;
+      if(nextRun?.active&&nextRun.runId&&nextRun.runId!==runId){
+        setTimeout(()=>friendLoop(nextRun.runId),0);
+      }
     }
   }
 
   async function startFriend(inputConfig){
     if(inputConfig?.mode===MODE_CONFIRM)return startFriendConfirm(inputConfig);
-    const other=await chrome.storage.local.get(["friendConfirmActive","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);
+    if(inputConfig?.mode===MODE_FRIEND_OF_FRIEND)return startFoFSend(inputConfig);
+    const other=await chrome.storage.local.get(["friendConfirmActive","friendFoFActive","friendFoFScanActive","isFeedInteracting","isAICommenting","isGroupJoining","isDiscoverJoining","groupInteractActive","groupPostActive","groupShareActive","salesPostActive","trendLearnActive","trendPostActive"]);
     if(Object.values(other).some(Boolean))return {ok:false,error:t("c.frBusyOther")};
     const config=normalizeConfig(inputConfig);
     if(config.mode===MODE_GROUP_COMMON&&!config.groups.length)return {ok:false,error:t("p.frNeedGroups")};
@@ -1192,6 +1896,30 @@
   }
 
   chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
+    if(msg.action==="friendFoFScanOwn"){
+      startFoFOwnScan().then(sendResponse).catch(e=>sendResponse({ok:false,error:e.message}));
+      return true;
+    }
+    if(msg.action==="friendFoFScanSource"){
+      startFoFSourceScan(msg.source||{}).then(sendResponse).catch(e=>sendResponse({ok:false,error:e.message}));
+      return true;
+    }
+    if(msg.action==="friendFoFStart"){
+      startFoFSend(msg.config||{}).then(sendResponse).catch(e=>sendResponse({ok:false,error:e.message}));
+      return true;
+    }
+    if(msg.action==="friendFoFStop"){
+      Promise.all([stopFoFScan(t("p.frStoppedByUser")),stopFoFSend(t("p.frStoppedByUser"))]).then(()=>sendResponse({ok:true}));
+      return true;
+    }
+    if(msg.action==="friendFoFReset"){
+      Promise.all([stopFoFScan(t("p.frResetDone")),resetFoFRun(t("p.frResetDone"))]).then(()=>sendResponse({ok:true}));
+      return true;
+    }
+    if(msg.action==="friendFoFClearHistory"){
+      chrome.storage.local.remove("friendFoFHistory").then(()=>sendResponse({ok:true}));
+      return true;
+    }
     if(msg.action==="friendConfirmStart"){
       startFriendConfirm(msg.config||{}).then(sendResponse).catch(e=>sendResponse({ok:false,error:e.message}));
       return true;
@@ -1203,7 +1931,7 @@
     if(msg.action==="friendConfirmReset"){
       stopConfirmRun(t("p.frResetDone")).then(async()=>{
         const stored=await chrome.storage.local.get("friendConfirmRunState"),state=stored.friendConfirmRunState||{};
-        Object.assign(state,{acceptedCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],emptyRounds:0,sourceReloads:0,stage:"list",pendingProfile:null,profileEvidenceByKey:{}});
+        Object.assign(state,{acceptedCount:0,skippedCount:0,uncertainCount:0,attemptedKeys:[],emptyRounds:0,sourceReloads:0});
         await publishConfirmState(state,t("p.frResetDone"));
         sendResponse({ok:true});
       });
@@ -1239,7 +1967,7 @@
       return true;
     }
     if(msg.action==="getStatus"){
-      chrome.storage.local.get(["friendRunState","sentCount","isRunning"]).then(s=>sendResponse({isRunning:!!s.isRunning,sentCount:s.sentCount||0,state:s.friendRunState||null}));
+      chrome.storage.local.get(["friendRunState","sentCount","isRunning","friendFoFRunState","friendFoFActive"]).then(s=>sendResponse({isRunning:!!s.isRunning||!!s.friendFoFActive,sentCount:s.sentCount||s.friendFoFRunState?.sentCount||0,state:s.friendRunState||s.friendFoFRunState||null}));
       return true;
     }
     return false;
@@ -1249,7 +1977,29 @@
     if(area!=="local")return;
     if(changes.friendRunState?.newValue?.active===false||changes.isRunning?.newValue===false)stopRequested=true;
     if(changes.friendConfirmRunState?.newValue?.active===false||changes.friendConfirmActive?.newValue===false)confirmStopRequested=true;
+    if(changes.friendFoFScanState?.newValue?.active===false||changes.friendFoFScanActive?.newValue===false)fofScanStopRequested=true;
+    if(changes.friendFoFRunState?.newValue?.active===false||changes.friendFoFActive?.newValue===false)fofSendStopRequested=true;
   });
+
+  (async()=>{
+    const stored=await chrome.storage.local.get("friendFoFScanState");
+    const state=stored.friendFoFScanState;
+    if(!state?.active||!state.runId)return;
+    const tabId=await ownTabId();
+    if(state.ownerTabId&&tabId&&state.ownerTabId!==tabId)return;
+    await sleep(1800);
+    friendFoFScanLoop(state.runId);
+  })();
+
+  (async()=>{
+    const stored=await chrome.storage.local.get("friendFoFRunState");
+    const state=stored.friendFoFRunState;
+    if(!state?.active||!state.runId)return;
+    const tabId=await ownTabId();
+    if(state.ownerTabId&&tabId&&state.ownerTabId!==tabId)return;
+    await sleep(1800);
+    friendFoFSendLoop(state.runId);
+  })();
 
   (async()=>{
     const stored=await chrome.storage.local.get("friendRunState");

@@ -15,6 +15,7 @@
   let skipped = 0;
   let nextAllowedAt = 0;
   let attempted = new Set();
+  let actorFailureStreak = 0;
 
   // Page Care feature state is intentionally separate from pageGroupJoin*.
   const PAGE_POST_FLAG = "pageGroupPostActive";
@@ -26,7 +27,12 @@
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const clean = value => String(value || "").replace(/[\u200B-\u200D\u2060\uFEFF]/g, "").replace(/\s+/g, " ").trim();
   const visible = el => {
-    if (!el?.isConnected || el.offsetParent === null) return false;
+    if (!el?.isConnected) return false;
+    // Facebook renders the fixed header actor button with offsetParent=null
+    // even while it is visible and clickable. Use computed visibility plus
+    // the viewport rect so fixed/sticky controls are not discarded.
+    const style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return false;
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   };
@@ -138,17 +144,144 @@
     return !!needle && haystack.includes(needle);
   }
 
+  const pageActorMenuLabel = /trang cá nhân của bạn|your profile|your account|xem tất cả trang cá nhân|see all profiles|chuyển (?:sang|đổi) (?:trang|hồ sơ|tài khoản)|switch profile|switch account|đổi tài khoản|switch/i;
+  const pageActorAllProfilesLabel = /xem tất cả trang cá nhân|see all profiles/i;
+  const pageActorMoreProfilesLabel = /xem thêm trang|see more pages|see more profiles|load more pages|load more profiles/i;
+  const pageActorSearchLabel = /tìm kiếm trang cá nhân và trang|search (?:for )?(?:profiles?|pages?)|search profiles? and pages?/i;
+  const pageActorSelectedText = /đang dùng|đang chọn|được chọn|acting as|selected|currently using|current profile|active profile/i;
+  const pageActorSelectedAttr = /(?:aria-checked|aria-selected|aria-pressed|aria-current|data-selected|data-active)\s*=\s*["']?(?:true|page|active|selected)/i;
+  const pageActorMenuRootLabel = /trang\s*(?:&|và)\s*trang cá nhân của bạn|pages?\s*(?:&|and)\s*profiles?|xem tất cả trang cá nhân|see all profiles|xem thêm trang|see more pages|see more profiles/i;
+
+  function actorNodeIsSelected(node) {
+    if (pageActorSelectedText.test(labelOf(node))) return true;
+    for (let current = node, level = 0; current && level < 4; level++, current = current.parentElement) {
+      const attrs = [...current.attributes].map(attr => `${attr.name}=${attr.value}`).join(" ");
+      if (pageActorSelectedAttr.test(attrs)) return true;
+    }
+    return false;
+  }
+
+  function actorMenuCandidates(root = document) {
+    return [...root.querySelectorAll('[role="menuitem"],a,button,[role="button"]')].filter(visible);
+  }
+
+  function actorMenuRoots() {
+    return [...document.querySelectorAll('[role="dialog"],[role="menu"],[aria-modal="true"],[data-pagelet*="profile" i],[data-testid*="profile" i]')]
+      .filter(visible)
+      .filter(menu => pageActorMenuRootLabel.test(labelOf(menu)) || actorMenuCandidates(menu).some(item => pageActorSelectedText.test(labelOf(item))));
+  }
+
   function actorEvidence(page) {
     if (!page?.name) return false;
     const name = clean(page.name);
-    const currentPath = facebookUrl(location.href)?.pathname || "";
-    const pagePath = facebookUrl(page.url)?.pathname || "";
-    if (pagePath && currentPath === pagePath) return true;
-    const nodes = [...document.querySelectorAll('[aria-label],button,[role="button"],[role="menuitem"]')]
+    const nodes = [...document.querySelectorAll('[aria-label],button,[role="button"],[role="menuitem"],a')].filter(visible);
+    return nodes.some(node => {
+      const text = labelOf(node);
+      if (!pageNameInText(text, name) || /(?:chuyển sang|switch to|xem tất cả|see all|xem thêm|see more)/i.test(text)) return false;
+      return actorNodeIsSelected(node);
+    });
+  }
+
+  function visiblePageActorMenu() {
+    return actorMenuRoots()[0] || null;
+  }
+  function visiblePageActorOption(page) {
+    const root = visiblePageActorMenu();
+    return actorMenuCandidates(root || document)
+      .find(item => pageNameInText(labelOf(item), page.name) && !/nhóm|group/i.test(labelOf(item)));
+  }
+  function visiblePageActorAllProfiles() {
+    return [...document.querySelectorAll('[role="menuitem"],a,button,[role="button"]')]
       .filter(visible)
-      .map(labelOf)
-      .filter(Boolean);
-    return nodes.some(text => pageNameInText(text, name) && /(trang|page|hồ sơ|profile|account|tài khoản|đang dùng|acting as|switch)/i.test(text));
+      .find(item => pageActorAllProfilesLabel.test(labelOf(item)));
+  }
+  function visiblePageActorMoreProfiles() {
+    return [...document.querySelectorAll('[role="menuitem"],a,button,[role="button"]')]
+      .filter(visible)
+      .find(item => pageActorMoreProfilesLabel.test(labelOf(item)));
+  }
+  function visiblePageActorSearch() {
+    const root = visiblePageActorMenu() || document;
+    return [...root.querySelectorAll('input,textarea,[role="textbox"]')]
+      .filter(visible)
+      .find(input => pageActorSearchLabel.test(labelOf(input)));
+  }
+  async function searchPageInActorMenu(page, alive) {
+    const input = visiblePageActorSearch();
+    if (!input || !(await alive())) return false;
+    const query = clean(page?.name);
+    if (!query) return false;
+    try {
+      input.scrollIntoView({ block: "center" });
+      input.focus();
+      document.execCommand("selectAll", false, null);
+      await chrome.runtime.sendMessage({ action: "trustedInput", text: query, pressEnter: false });
+      await sleep(1000);
+      return pageNameInText(input.value || input.innerText || input.textContent, query);
+    } catch (_) { return false; }
+  }
+  async function closePageActorMenu() {
+    const root = visiblePageActorMenu();
+    if (!root) return;
+    const close = actorMenuCandidates(root).find(item => /^(?:đóng|close)$/i.test(labelOf(item)));
+    if (!close) return;
+    try { close.click(); } catch (_) { }
+    await sleep(300);
+  }
+  async function openPageActorMenu(button, click, alive) {
+    if (visiblePageActorMenu() || visiblePageActorAllProfiles() || visiblePageActorMoreProfiles()) return true;
+    if (!(await click(button))) return false;
+    await sleep(450);
+    if (visiblePageActorMenu() || visiblePageActorAllProfiles() || visiblePageActorMoreProfiles()) return true;
+    // CDP can report a successful dispatch even when Facebook drops the
+    // synthetic coordinate event during a header rerender. Retry once with
+    // Facebook's own DOM click, but only after verifying the menu stayed shut.
+    if (!(await alive())) return false;
+    try { button.click(); } catch (_) { return false; }
+    await sleep(450);
+    return !!(visiblePageActorMenu() || visiblePageActorAllProfiles() || visiblePageActorMoreProfiles());
+  }
+  async function choosePageFromActorMenu(page, click, alive) {
+    let searched = false;
+    for (let pass = 0; pass < 8; pass++) {
+      const option = visiblePageActorOption(page);
+      if (option) {
+        if (!(await click(option))) return actorEvidence(page);
+        const deadline = Date.now() + 12000;
+        while (Date.now() < deadline) {
+          if (!(await alive())) return false;
+          if (actorEvidence(page)) return true;
+          await sleep(500);
+        }
+        if (actorEvidence(page)) return true;
+        // Facebook closes the picker after a Page click. Reopen it once and
+        // verify the selected marker instead of treating the click itself as proof.
+        const controls = [...document.querySelectorAll('button,[role="button"],[aria-haspopup="menu"]')]
+          .filter(visible)
+          .filter(control => pageActorMenuLabel.test(labelOf(control)));
+        for (const control of controls) {
+          if (!(await openPageActorMenu(control, element => click(element), alive))) continue;
+          if (actorEvidence(page)) { await closePageActorMenu(); return true; }
+        }
+        await closePageActorMenu();
+        return false;
+      }
+      const expand = visiblePageActorAllProfiles() || visiblePageActorMoreProfiles();
+      if (expand) {
+        if (!(await click(expand))) break;
+        await sleep(700);
+        continue;
+      }
+      if (!searched && await searchPageInActorMenu(page, alive)) {
+        searched = true;
+        await sleep(900);
+        continue;
+      }
+      break;
+    }
+    const verified = actorEvidence(page);
+    if (!verified) await closePageActorMenu();
+    return verified;
   }
 
   function managedPageLinks() {
@@ -271,6 +404,29 @@
     return answers[index % Math.max(1, answers.length)] || answers[0];
   }
 
+  const PAGE_JOIN_AI_TIMEOUT_MS = 30000;
+  async function requestPageJoinAi(groupName, questions, runId) {
+    let settled = false;
+    let response = null;
+    try {
+      chrome.runtime.sendMessage({
+        action: "aiAnswerJoinQuestions",
+        groupName,
+        questions,
+        prompt: currentConfig.aiPrompt,
+        aiConfig: await liveAiConfig()
+      }).then(result => { settled = true; response = result; }).catch(() => { settled = true; response = null; });
+    } catch (_) {
+      return { ok: false, code: "send-failed" };
+    }
+    const deadline = Date.now() + PAGE_JOIN_AI_TIMEOUT_MS;
+    while (!settled && Date.now() < deadline) {
+      if (!(await live(runId))) return { ok: false, code: "stopped" };
+      await sleep(400);
+    }
+    return settled ? response : { ok: false, code: "timeout" };
+  }
+
   function checkboxChecked(box) {
     if (box.matches?.('input[type="checkbox"]')) return !!box.checked;
     return String(box.getAttribute("aria-checked") || box.getAttribute("data-checked") || box.getAttribute("aria-pressed") || "").toLowerCase() === "true";
@@ -315,16 +471,9 @@
       const aiIndexes = questions.map((question, index) => consentQuestion(question) ? -1 : index).filter(index => index >= 0);
       if (currentConfig?.aiEnabled && aiIndexes.length) {
         await chrome.storage.local.set({ pageGroupJoinStatus: t("pgq.aiThinking", { n: aiIndexes.length, name: groupName }) });
-        let response = null;
-        try {
-          response = await chrome.runtime.sendMessage({
-            action: "aiAnswerJoinQuestions",
-            groupName,
-            questions: aiIndexes.map(index => questions[index]),
-            prompt: currentConfig.aiPrompt,
-            aiConfig: await liveAiConfig()
-          });
-        } catch (_) {}
+        const response = await requestPageJoinAi(groupName, aiIndexes.map(index => questions[index]), runId);
+        if (response?.code === "timeout") await chrome.storage.local.set({ pageGroupJoinStatus: t("pgq.aiTimeout", { name: groupName }) });
+        if (response?.code === "stopped") return { ok: false, hadDialog: true };
         if (response?.ok) (response.answers || []).slice(0, aiIndexes.length).forEach((answer, index) => { answers[aiIndexes[index]] = clean(answer); });
         if (aiIndexes.some(index => !answers[index])) return { ok: false, hadDialog: true };
       }
@@ -366,23 +515,13 @@
 
   async function switchToSelectedPage(page, runId) {
     if (actorEvidence(page)) return true;
+    if (await choosePageFromActorMenu(page, element => controlledClick(element, runId), () => live(runId))) return true;
     const switchButtons = [...document.querySelectorAll('button,[role="button"],[aria-haspopup="menu"]')]
       .filter(visible)
-      .filter(button => /xem tất cả trang cá nhân|see all profiles|chuyển (?:sang|đổi) (?:trang|hồ sơ|tài khoản)|switch profile|switch account|đổi tài khoản|switch/i.test(labelOf(button)));
+      .filter(button => pageActorMenuLabel.test(labelOf(button)));
     for (const button of switchButtons) {
-      if (!(await controlledClick(button, runId))) continue;
-      await sleep(500);
-      const option = [...document.querySelectorAll('[role="menuitem"],a,button,[role="button"]')]
-        .filter(visible)
-        .find(item => pageNameInText(labelOf(item), page.name) && !/nhóm|group/i.test(labelOf(item)));
-      if (option && await controlledClick(option, runId)) {
-        const deadline = Date.now() + 12000;
-        while (Date.now() < deadline) {
-          if (!(await live(runId))) return false;
-          if (actorEvidence(page)) return true;
-          await sleep(500);
-        }
-      }
+      if (!(await openPageActorMenu(button, element => controlledClick(element, runId), () => live(runId)))) continue;
+      if (await choosePageFromActorMenu(page, element => controlledClick(element, runId), () => live(runId))) return true;
     }
     return actorEvidence(page);
   }
@@ -427,6 +566,21 @@
     return min + Math.floor(Math.random() * (max - min + 1));
   }
 
+  async function recordPageJoinSkip(item, code, status, stop = false) {
+    skipped++;
+    nextAllowedAt = Date.now() + randomDelay();
+    if (stop) active = false;
+    await writeState({
+      active,
+      status,
+      skipped,
+      lastSkipCode: code,
+      lastSkipGroup: item?.name || "",
+      lastSkipAt: Date.now()
+    });
+    return false;
+  }
+
   async function returnToSource(runId) {
     if (!(await live(runId)) || routeMatches(currentConfig)) return true;
     location.replace(routeUrl(currentConfig));
@@ -440,38 +594,27 @@
     if (!(await waitUntilAllowed(runId))) return false;
     const directPageControl = pageNameInText(labelOf(item.button), currentConfig.page.name);
     if (!directPageControl && !(await switchToSelectedPage(currentConfig.page, runId))) {
-      skipped++;
-      nextAllowedAt = Date.now() + randomDelay();
-      await writeState({ status: t("pg.noPageActor", { name: currentConfig.page.name }), skipped });
-      return false;
+      actorFailureStreak++;
+      return recordPageJoinSkip(item, "actor", actorFailureStreak >= 2
+        ? t("pg.actorUnavailable", { name: currentConfig.page.name })
+        : t("pg.noPageActor", { name: currentConfig.page.name }), actorFailureStreak >= 2);
     }
+    actorFailureStreak = 0;
     const button = item.button?.isConnected ? item.button : findJoinControl(item.card);
     if (!button || successLabel.test(labelOf(button))) {
-      skipped++;
-      nextAllowedAt = Date.now() + randomDelay();
-      await writeState({ status: t("pg.questionFailed", { name: item.name }), skipped });
-      return false;
+      return recordPageJoinSkip(item, "question", t("pg.questionFailed", { name: item.name }));
     }
     const initialLabel = labelOf(button);
     if (!(await controlledClick(button, runId))) {
-      skipped++;
-      nextAllowedAt = Date.now() + randomDelay();
-      await writeState({ status: t("pg.unconfirmed", { name: item.name }), skipped });
-      return false;
+      return recordPageJoinSkip(item, "click", t("pg.unconfirmed", { name: item.name }));
     }
     const answered = await answerPageQuestions(item.name, runId);
     if (!answered.ok) {
-      skipped++;
-      nextAllowedAt = Date.now() + randomDelay();
-      await writeState({ status: t("pg.questionFailed", { name: item.name }), skipped });
-      return false;
+      return recordPageJoinSkip(item, "question", t("pg.questionFailed", { name: item.name }));
     }
     const proof = await waitJoinProof(item, initialLabel, runId);
     if (!proof) {
-      skipped++;
-      nextAllowedAt = Date.now() + randomDelay();
-      await writeState({ status: t("pg.unconfirmed", { name: item.name }), skipped });
-      return false;
+      return recordPageJoinSkip(item, "proof", t("pg.unconfirmed", { name: item.name }));
     }
     joined++;
     nextAllowedAt = Date.now() + randomDelay();
@@ -510,8 +653,8 @@
       emptyRounds = 0;
       for (const item of available) {
         if (!(await live(runId)) || joined >= Math.max(1, parseInt(currentConfig.target) || 1)) break;
-        await processCard(item, runId);
-        await writeState({ joined, skipped, status: t("pg.progress", { joined, target: currentConfig.target, skipped }) });
+        const processed = await processCard(item, runId);
+        if (processed) await writeState({ joined, skipped, status: t("pg.progress", { joined, target: currentConfig.target, skipped }) });
         if (!(await live(runId))) return;
       }
       window.scrollBy({ top: Math.max(420, Math.floor(window.innerHeight * 0.8)), behavior: "smooth" });
@@ -546,23 +689,13 @@
 
   async function pageSwitchActor(page, flag, runId) {
     if (actorEvidence(page)) return true;
+    if (await choosePageFromActorMenu(page, element => pageFeatureClick(element, flag, runId), () => pageFeatureLive(flag, runId))) return true;
     const controls = [...document.querySelectorAll('button,[role="button"],[aria-haspopup="menu"]')]
       .filter(visible)
-      .filter(button => /xem tất cả trang cá nhân|see all profiles|chuyển (?:sang|đổi) (?:trang|hồ sơ|tài khoản)|switch profile|switch account|đổi tài khoản|switch/i.test(labelOf(button)));
+      .filter(button => pageActorMenuLabel.test(labelOf(button)));
     for (const control of controls) {
-      if (!(await pageFeatureClick(control, flag, runId))) continue;
-      await sleep(500);
-      const option = [...document.querySelectorAll('[role="menuitem"],a,button,[role="button"]')]
-        .filter(visible)
-        .find(item => pageNameInText(labelOf(item), page.name) && !/nhóm|group/i.test(labelOf(item)));
-      if (option && await pageFeatureClick(option, flag, runId)) {
-        const deadline = Date.now() + 12000;
-        while (Date.now() < deadline) {
-          if (!(await pageFeatureLive(flag, runId))) return false;
-          if (actorEvidence(page)) return true;
-          await sleep(500);
-        }
-      }
+      if (!(await openPageActorMenu(control, element => pageFeatureClick(element, flag, runId), () => pageFeatureLive(flag, runId)))) continue;
+      if (await choosePageFromActorMenu(page, element => pageFeatureClick(element, flag, runId), () => pageFeatureLive(flag, runId))) return true;
     }
     return actorEvidence(page);
   }
@@ -1051,6 +1184,7 @@
   function applyConfig(config) {
     currentConfig = { ...(config || {}), page: config?.page || null, aiConfig: config?.aiConfig || {} };
     currentRunId = String(config?.runId || currentRunId || "");
+    actorFailureStreak = 0;
     active = true;
   }
 

@@ -211,11 +211,48 @@
     }
     return best||btn.parentElement?.parentElement?.parentElement||btn.parentElement;
   }
+  function findGroupCommentPostContainer(btn){
+    if(!btn)return null;
+    const semantic=btn.closest('[data-pagelet^="FeedUnit_"], div[role="article"], div[aria-describedby]');
+    if(semantic)return semantic;
+    let best=null,node=btn.parentElement;
+    for(let depth=0;depth<24&&node;depth++,node=node.parentElement){
+      const text=String(node.innerText||"").trim();
+      const hasPermalink=!!findPostPermalink(node);
+      const labels=[...node.querySelectorAll('[role="button"]')].map(buttonLabel);
+      const hasReaction=labels.some(label=>/(?:thích|like|tym|love|haha|wow|buồn|sad|phẫn nộ|angry|gỡ|thay đổi cảm xúc|change reaction)/i.test(label));
+      const hasComment=labels.some(isMainCommentActionLabel);
+      if(hasPermalink&&hasReaction&&hasComment&&text.length>=15)return node;
+      if(hasReaction&&hasComment&&text.length>=60&&!best)best=node;
+    }
+    return best||btn.parentElement;
+  }
+  function findGroupCommentPosts(){
+    const posts=[],seen=new Set(),seenIds=new Set();
+    const candidates=[...document.querySelectorAll('[role="button"], [aria-label*="bình luận" i], [aria-label*="comment" i]')]
+      .filter(btn=>isRenderedElement(btn)&&!btn.closest('ul')&&isMainCommentActionLabel(buttonLabel(btn)));
+    for(const btn of candidates){
+      const post=findGroupCommentPostContainer(btn);
+      if(!post||seen.has(post)||isSponsoredPost(post,{ignoreGenericPreview:true})||post.querySelector('a[href*="/reel/"],a[href*="/watch/"]'))continue;
+      // Khi lớp chi tiết "Bài viết" đang mở, cùng một bài xuất hiện hai lần
+      // (card dưới feed + hộp thoại overlay). Chặn trùng theo identity ngay
+      // từ khâu quét để không sinh hai comment khác nhau chồng lên cùng bài.
+      let pid="";
+      try{pid=postIdentity(post)||"";}catch(_){pid="";}
+      if(pid&&seenIds.has(pid))continue;
+      post._commentBtn=btn;seen.add(post);if(pid)seenIds.add(pid);posts.push(post);
+    }
+    return posts;
+  }
 
-  function isSponsoredPost(article){
+  function isSponsoredPost(article,options={}){
     if(!article) return false;
     if(article.querySelector('a[href*="/ads/about"], a[href*="facebook.com/ads/about"], a[href*="facebook.com/about/ads"], a[href*="/ads/library"], a[href*="/adpreferences"]')) return true;
-    if(article.querySelector('[data-ad-comet-preview], [data-ad-preview]')) return true;
+    // Facebook also emits data-ad-preview="message" on ordinary posts. The
+    // group Comment AI path ignores that legacy hint and keeps only explicit
+    // ad markers, so normal visible posts are not silently dropped.
+    if(article.querySelector('[data-ad-comet-preview]')) return true;
+    if(!options.ignoreGenericPreview&&article.querySelector('[data-ad-preview]')) return true;
     if(article.querySelector('[aria-label="Được tài trợ" i], [aria-label="Sponsored" i], [aria-label="Quảng cáo" i], [aria-label*="nội dung được tài trợ" i]')) return true;
     
     const headerCands = article.querySelectorAll('h2, h3, h4, h5, [role="heading"], span[dir="auto"]');
@@ -402,6 +439,37 @@
     // ổn định hơn tên tài khoản (có thể bị rút gọn/đổi ngôn ngữ).
     return [...root.querySelectorAll('[aria-label]')].some(el=>/chỉnh sửa hoặc xóa bình luận này|edit or delete this comment/i.test(el.getAttribute('aria-label')||""));
   }
+  function existingGroupCommentTexts(article){
+    if(!article)return [];
+    const normalize=s=>String(s||"").replace(/[\u200B-\u200D\u2060\uFEFF]/g,"").replace(/\s+/g," ").trim().toLowerCase();
+    // Cùng cách chọn node với commentProofExists, nhưng trả về nội dung các
+    // comment đã có (loại nội dung còn nằm trong ô nhập của chính mình).
+    const nodes=[...article.querySelectorAll('[role="article"], [aria-label*="bình luận" i], [aria-label*="comment" i]')]
+      .filter(node=>node!==article)
+      .filter(node=>!node.matches('[contenteditable="true"],[role="textbox"]')&&!node.closest('[contenteditable="true"],[role="textbox"]'))
+      .filter(node=>{
+        const label=(node.getAttribute("aria-label")||"").toLowerCase();
+        return label.includes("bình luận")||label.includes("comment")||!!node.closest("ul");
+      });
+    const texts=[];
+    for(const node of nodes){
+      const text=normalize(node.innerText||node.textContent);
+      if(text.length>=20)texts.push(text);
+    }
+    return [...new Set(texts)].slice(0,60);
+  }
+  function groupCommentDuplicatesExisting(article, commentText){
+    const normalize=s=>String(s||"").replace(/[\u200B-\u200D\u2060\uFEFF]/g,"").replace(/\s+/g," ").trim().toLowerCase();
+    const mine=normalize(commentText);
+    if(mine.length<25)return false;
+    // Câu AI trùng gần nguyên văn comment đã có: hoặc toàn bộ câu AI đã
+    // được người khác nói, hoặc câu AI ôm trọn một comment dài của người
+    // khác. Cả hai đều là đăng chồng — phải bỏ qua, không được gửi.
+    return existingGroupCommentTexts(article).some(existing=>{
+      if(existing.includes(mine))return true;
+      return existing.length>=30&&mine.includes(existing);
+    });
+  }
 
   function isValidFeedLike(btn, expectedBar){
     if(!isRenderedElement(btn)) return false;
@@ -444,7 +512,22 @@
 
   // Lay noi dung bai viet de gui AI
   function extractPostText(article){
-    function isInComment(n){ return !!n.closest('ul, div[aria-label*="Bình luận"], div[aria-label*="Comment"]'); }
+    function isInComment(n){ return !!n?.closest?.('ul, div[aria-label*="Bình luận"], div[aria-label*="Comment"]'); }
+    // Comment con trong overlay chi tiết/feed thường là role="article" lồng
+    // nhau mà không có ul hay aria-label "Bình luận" ở tổ tiên. Chỉ dùng cho
+    // nhánh fallback (không đụng msgDiv/bgDiv chính xác) để khỏi nuốt comment
+    // của người khác thành "nội dung bài" ở post ảnh caption ngắn.
+    function isInNestedCommentItem(n){
+      if(!n?.closest)return true;
+      const inner=n.closest('div[role="article"]');
+      if(!inner||inner===article)return false;
+      const t=String(inner.innerText||inner.textContent||"");
+      if(t.length>600)return false;
+      const btns=[...inner.querySelectorAll('[role="button"]')].map(buttonLabel);
+      const hasReply=btns.some(l=>l==="trả lời"||l==="reply")||/(?:trả lời|reply)/i.test(t.slice(0,200));
+      const hasMainComment=btns.some(isMainCommentActionLabel);
+      return hasReply&&!hasMainComment;
+    }
     let text="";
     const msgDiv = article.querySelector('div[data-ad-preview="message"], div[data-ad-comet-preview="message"]');
     if(msgDiv && !isInComment(msgDiv) && msgDiv.innerText.trim().length>0) text=msgDiv.innerText.trim();
@@ -455,7 +538,7 @@
     if(!text || text.length<20){
       const cands = article.querySelectorAll('div[dir="auto"]');
       let longest="";
-      cands.forEach(c=>{ if(isInComment(c)) return; const t=(c.innerText||"").trim(); if(t.length>longest.length) longest=t; });
+      cands.forEach(c=>{ if(isInComment(c)||isInNestedCommentItem(c)) return; const t=(c.innerText||"").trim(); if(t.length>longest.length) longest=t; });
       if(longest) text=longest;
     }
     if(!text) text = article.innerText ? article.innerText.slice(0,800).trim() : "";
@@ -465,11 +548,38 @@
     return text.slice(0, 2000); // gioi han gui AI
   }
 
+  function groupCommentSourceText(article){
+    const primary=String(extractPostText(article)||"").trim();
+    if(primary)return primary;
+    // Bài chỉ có ảnh đôi khi không có message div. Lấy mô tả ảnh công khai
+    // nếu Facebook đã render alt text, để AI vẫn có dữ liệu thay vì bỏ qua.
+    const alts=[...article.querySelectorAll("img[alt]")]
+      .map(img=>String(img.getAttribute("alt")||"").trim())
+      .filter(text=>text.length>=2&&!/^(?:profile picture|ảnh đại diện|thích|like|avatar)$/i.test(text));
+    if(alts.length)return alts.join(" ").slice(0,2000);
+    // Không có text/alt vẫn là bài có thể bình luận. Gửi một nguồn tối thiểu
+    // để AI biết đây là bài hình ảnh đang hiển thị, thay vì loại bài vì ngắn.
+    return "Bài viết hình ảnh đang hiển thị trong nhóm; hãy phản hồi tự nhiên và hỏi thêm một chi tiết phù hợp với bài.";
+  }
+
+  function isReplyCommentBox(el){
+    if(!el?.getAttribute)return false;
+    // Chỉ loại ô trả lời comment con khi Facebook nêu rõ đích trả lời. Trên
+    // giao diện tiếng Việt hiện tại, ô comment chính cũng có nhãn
+    // "Trả lời dưới tên X", còn ô reply con có nhãn "Trả lời với vai trò X".
+    // Regex cũ chỉ tìm chữ "trả lời" nên đã loại nhầm composer chính trong
+    // trang permalink, làm Comment AI báo không thấy ô nhập.
+    // Chỉ loại ở khâu CHỌN ô để gõ; khâu dọn draft vẫn quét cả ô reply để
+    // không sót bản nháp do phiên cũ để lại.
+    const label=((el.getAttribute("aria-label")||"")+" "+(el.getAttribute("aria-placeholder")||"")+" "+(el.getAttribute("placeholder")||"")).toLowerCase();
+    return /(?:trả lời\s+(?:với\s+vai\s+trò|cho|lại)|reply(?:ing)?\s+(?:as|to)|respond(?:ing)?\s+to)/.test(label);
+  }
   function findCommentBox(article){
     if(!article) return null;
     const boxes=[...article.querySelectorAll('div[contenteditable="true"], [role="textbox"]')].filter(el => {
       if(!isRenderedElement(el)) return false;
       if(isMessengerChatBox(el)) return false; // Không lấy ô chat Messenger
+      if(isReplyCommentBox(el)) return false; // Không gõ vào ô Trả lời comment con
       const isEditable = el.isContentEditable || el.getAttribute("contenteditable")==="true" || el.getAttribute("role")==="textbox";
       if(!isEditable) return false;
       const label = ((el.getAttribute("aria-label")||"") + " " + (el.getAttribute("aria-placeholder")||"") + " " + (el.getAttribute("placeholder")||"")).toLowerCase();
@@ -499,7 +609,7 @@
     // tạo contenteditable trong card gốc. Chỉ nhận ô trong lớp phủ khớp đúng
     // permalink hoặc phần đầu nội dung của bài hiện tại.
     const boxes=[...document.querySelectorAll('div[contenteditable="true"], [role="textbox"]')].filter(el=>{
-      if(!isRenderedElement(el)||isMessengerChatBox(el))return false;
+      if(!isRenderedElement(el)||isMessengerChatBox(el)||isReplyCommentBox(el))return false;
       const label=((el.getAttribute("aria-label")||"")+" "+(el.getAttribute("aria-placeholder")||"")+" "+(el.getAttribute("placeholder")||"")).toLowerCase();
       return !/(?:nhập tin nhắn|message|chat)/.test(label)||/(?:bình luận|comment)/.test(label);
     });
@@ -559,22 +669,97 @@
   }
   async function prepareAIPageTransition(reason=""){
     const activationCleaned=await cleanupAIActivation(reason);
-    if(!activationCleaned)return false;
-    return cleanupAICommentComposer(undefined,undefined,reason);
+    const composerCleaned=activationCleaned&&await cleanupAICommentComposer(undefined,undefined,reason);
+    // A detached/empty editor is not proof that Facebook released its draft.
+    // Never discard an unowned draft or navigate through a leave warning.
+    if(!composerCleaned||aiLeaveWarningVisible()||visibleCommentBoxes().some(box=>commentDraftText(box))){
+      isAICommenting=false;
+      await chrome.storage.local.set({isAICommenting:false,pendingAIComment:false,aiStatus:t("ai2.transitionBlocked",{from:aiCount,to:aiTarget})});
+      return false;
+    }
+    return true;
+  }
+  function aiLeaveWarningVisible(){
+    return [...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].some(el=>
+      isRenderedElement(el)&&/chưa hoàn tất bình luận|chưa hoàn thành bình luận|haven.t finished your comment|unfinished comment|leave (?:this )?page/i.test(el.innerText||el.textContent||""));
+  }
+  let aiFeedNavigationDispatched=false;
+  async function navigateAIToMainFeed(){
+    if(aiFeedNavigationDispatched)return true;
+    if(!await prepareAIPageTransition("quay lại Bảng tin"))return false;
+    const state=await chrome.storage.local.get(["isAICommenting","aiActiveConfig","pendingAIConfig"]);
+    if(state.isAICommenting===false)return false;
+    const ownerTabId=(await chrome.runtime.sendMessage({action:"getSenderTabId"}))?.tabId;
+    const owner=state.aiActiveConfig?.ownerTabId||state.pendingAIConfig?.ownerTabId;
+    if(owner&&owner!==ownerTabId)return false;
+    await chrome.storage.local.set({pendingAIComment:true,pendingAIConfig:{target:aiTarget,minDelay:aiMinDelay/1000,maxDelay:aiMaxDelay/1000,economyMode:aiEconomyMode,batchSize:aiBatchSize,cacheDays:aiCacheDays,ownerTabId}});
+    if((await chrome.storage.local.get("isAICommenting")).isAICommenting===false)return false;
+    aiFeedNavigationDispatched=true;
+    location.assign("https://www.facebook.com/");
+    return true;
   }
   function findCommentBoxOpenedByClick(previousBoxes){
-    const opened=visibleCommentBoxes().filter(box=>!previousBoxes.has(box));
+    const opened=visibleCommentBoxes().filter(box=>!previousBoxes.has(box)&&!isReplyCommentBox(box));
     const box=opened.find(b=>b.closest('[role="dialog"]'))||opened[0]||null;
     if(!box)return null;
     const scope=box.closest('[role="dialog"]')||findFeedPostContainer(box)||box.parentElement;
     return {box,scope};
+  }
+  function findGroupPostDetailComposer(identity,signature){
+    // Khi Facebook chuyển một bài nhóm sang permalink, nó vẫn giữ card cũ
+    // phía sau lớp phủ. Hai card đều có thể có composer, nhưng chỉ composer
+    // nằm trong lớp phủ mới là nơi người dùng đang nhìn thấy và là đích của
+    // route permalink. Không cho phép fallback sang card nền trong trường
+    // hợp này, nếu không chữ sẽ bị gõ "ở bên dưới" còn ô trong bài nổi trống.
+    if(!identity||!isFacebookPostDetailPage()||!groupCommentRouteMatchesIdentity(identity))return null;
+    const dialogs=[...document.querySelectorAll('[role="dialog"]')].filter(isRenderedElement).reverse();
+    for(const dialog of dialogs){
+      const boxes=[...dialog.querySelectorAll('div[contenteditable="true"], [role="textbox"]')].filter(box=>{
+        if(!isRenderedElement(box)||isMessengerChatBox(box)||isReplyCommentBox(box))return false;
+        const label=((box.getAttribute("aria-label")||"")+" "+(box.getAttribute("aria-placeholder")||"")+" "+(box.getAttribute("placeholder")||"")).toLowerCase();
+        return !/(?:nhập tin nhắn|type a message|viết tin nhắn|tin nhắn|message|chat)/.test(label)||/(?:bình luận|comment)/.test(label);
+      });
+      if(!boxes.length)continue;
+      // Một dialog xác nhận/nháp không phải bài viết không được dùng làm
+      // fallback; dialog post phải chứa ngữ cảnh post/comment hoặc khớp
+      // identity/signature đã chọn trước đó.
+      const text=String(dialog.innerText||dialog.textContent||"");
+      const matched=postIdentity(dialog)===identity||exactCommentScopeForBox(boxes[0],identity,signature)===dialog;
+      if(matched||/(?:bài viết|post|bình luận|comment)/i.test(text))return {box:boxes[0],scope:dialog};
+    }
+    return null;
+  }
+  function findGroupCommentBoxOpenedByClick(previousBoxes,identity,signature){
+    const detail=findGroupPostDetailComposer(identity,signature);
+    if(detail&&!previousBoxes.has(detail.box))return detail;
+    const opened=visibleCommentBoxes().filter(box=>!previousBoxes.has(box)&&!isReplyCommentBox(box));
+    if(!opened.length)return null;
+    const candidates=opened.map(box=>{
+      const label=((box.getAttribute("aria-label")||"")+" "+(box.getAttribute("aria-placeholder")||"")+" "+(box.getAttribute("placeholder")||"")).toLowerCase();
+      const exactScope=exactCommentScopeForBox(box,identity,signature);
+      const postScope=findFeedPostContainer(box);
+      const postMatches=!!(postScope&&identity&&postIdentity(postScope)===identity);
+      // Route permalink chỉ là bằng chứng khi composer thuộc dialog chi tiết.
+      // Không cộng điểm cho mọi ô ở card nền, vì Facebook giữ chúng sống phía
+      // sau lớp phủ và chúng có thể trùng permalink do SPA render.
+      const detailMatches=!!(box.closest('[role="dialog"]')&&identity&&groupCommentRouteMatchesIdentity(identity)&&isFacebookPostDetailPage());
+      const mainLabel=/(?:bình luận|comment)/.test(label)&&!/(?:trả lời|reply)/.test(label);
+      const score=(exactScope?100:0)+(postMatches?90:0)+(mainLabel?40:0)+(box.closest('[role="dialog"]')?20:0)+(detailMatches?10:0);
+      return {box,scope:exactScope||postScope||box.closest('[role="dialog"]')||box.parentElement,score,exactScope,postMatches,detailMatches};
+    }).sort((a,b)=>b.score-a.score);
+    const best=candidates[0];
+    // Không lấy một composer mới của bài khác. Khi Facebook vừa mở trang
+    // permalink, route + composer chính là bằng chứng đủ để nhận đúng bài;
+    // trên feed thì phải khớp container/permalink của bài vừa bấm.
+    if(!best||(!best.exactScope&&!best.postMatches&&!best.detailMatches))return null;
+    return {box:best.box,scope:best.scope};
   }
   async function closeExactCommentOverlay(scope){
     if(!scope||scope===document.body||scope===document.documentElement)return;
     const close=[...scope.querySelectorAll('[role="button"],button')].filter(btn=>{
       if(!isRenderedElement(btn))return false;
       const label=buttonLabel(btn);
-      return /^(đóng|close|thoát|quay lại|back)(?:s|$)/i.test(label);
+      return /^(đóng|close|thoát|quay lại|back)(?:\s|$)/i.test(label);
     });
     if(close[0]){try{await trustedMouse(close[0],"click");}catch(_){}}
   }
@@ -582,6 +767,89 @@
     if(!box)return "";
     return String(box.innerText??box.textContent??box.value??"")
       .replace(/[\u200B-\u200D\u2060\uFEFF]/g,"").trim();
+  }
+  function normalizeCommentComposerText(value){
+    return String(value||"")
+      .replace(/[\u200B-\u200D\u2060\uFEFF]/g,"")
+      .replace(/\u00A0/g," ")
+      .replace(/\s+/g," ")
+      .trim();
+  }
+  function commentComposerText(box){
+    return normalizeCommentComposerText(box?.innerText??box?.textContent??box?.value??"");
+  }
+  async function waitForExactCommentDraft(box,expected,resolveReplacement,stillActive,timeout=5000){
+    const wanted=normalizeCommentComposerText(expected);
+    if(!wanted)return null;
+    const deadline=Date.now()+timeout;
+    let current=box;
+    while(Date.now()<deadline){
+      if(stillActive&&!await stillActive())return null;
+      if(current?.isConnected&&normalizeCommentComposerText(commentComposerText(current))===wanted)return current;
+      // Facebook can keep the old editor connected while mounting a new
+      // editor for the same post. Inspect the resolver on every poll and
+      // prefer a replacement that already contains the complete text.
+      if(typeof resolveReplacement==="function"){
+        const replacement=resolveReplacement(current)||null;
+        if(replacement?.isConnected&&normalizeCommentComposerText(commentComposerText(replacement))===wanted)return replacement;
+        if(replacement?.isConnected&&replacement!==current&&(!current?.isConnected||!commentComposerText(current)))current=replacement;
+      }
+      await sleep(150);
+    }
+    return null;
+  }
+  async function fillAndVerifyCommentBox(box,commentText,resolveReplacement,stillActive,typingGuard={}){
+    if(!box?.isConnected||isMessengerChatBox(box))return {ok:false,reason:"box-timeout",box};
+    // Không ghi đè bản nháp có sẵn của người dùng. Chỉ khi ô rỗng tại thời
+    // điểm bắt đầu, tiện ích mới sở hữu ô đó và được phép dọn nếu nhập hụt.
+    if(commentComposerText(box))return {ok:false,reason:"draft",box};
+    // Facebook thường mount lại editor ngay sau khi mở khung bình luận.
+    // Chờ editor ổn định và ưu tiên replacement cùng bài trước khi gõ để
+    // không làm mất các code-point đầu câu khi React đổi node đang focus.
+    await sleep(850);
+    const readyReplacement=typeof resolveReplacement==="function"?resolveReplacement(box):null;
+    if(readyReplacement?.isConnected&&readyReplacement!==box&&!commentComposerText(readyReplacement))box=readyReplacement;
+    if(!box?.isConnected||isMessengerChatBox(box))return {ok:false,reason:"box-timeout",box};
+    if(commentComposerText(box))return {ok:false,reason:"draft",box};
+    try{box.focus();box.click();}catch(_){ }
+    if(document.activeElement!==box&&!box.contains(document.activeElement))return {ok:false,reason:"box-timeout",box};
+    let typed=await chrome.runtime.sendMessage({
+      action:"trustedInput",
+      text:commentText,
+      pressEnter:false,
+      // Gõ chậm, có nhịp ngẫu nhiên và dừng nhẹ sau dấu câu để giống người
+      // thật hơn; vẫn xác nhận đủ nội dung trước khi cho phép gửi.
+      typingMinDelay:45,
+      typingMaxDelay:105,
+      typingChunkSize:2,
+      humanLike:true,
+      abortStorageKey:typingGuard.storageKey||"",
+      abortRunId:typingGuard.runId||"",
+      abortRunIdKey:typingGuard.runIdKey||""
+    }).catch(()=>null);
+    if(typed?.code==="ABORT_TYPING"){
+      if(box?.isConnected)await clearAICommentDraft(box);
+      return {ok:false,reason:"stopped",box};
+    }
+    if(!typed?.ok){
+      try{box.focus();document.execCommand("insertText",false,commentText);}catch{ }
+    }
+    const exact=await waitForExactCommentDraft(box,commentText,resolveReplacement,stillActive);
+    if(exact)return {ok:true,box:exact};
+    // Không bao giờ bấm Gửi khi editor chỉ nhận một phần (ví dụ "Chuẩ")
+    // hoặc Facebook vừa thay DOM giữa lúc nhập. Ô này ban đầu rỗng nên việc
+    // dọn phần nhập hụt không chạm vào bản nháp của người dùng.
+    // Facebook có thể thay hẳn composer trong lúc gõ. Khi đó box cũ vẫn còn
+    // connected hoặc đã rời DOM, còn phần nhập hụt nằm ở một node mới; luôn
+    // thử dọn cả replacement trước khi cho phép luồng đổi bài/đổi nhóm để
+    // tránh hộp thoại "Rời khỏi trang?" và bản nháp bị bỏ lại.
+    const replacement=typeof resolveReplacement==="function"?resolveReplacement():null;
+    const cleanupCandidates=[];
+    for(const candidate of [replacement,box]){
+      if(candidate?.isConnected&&!cleanupCandidates.includes(candidate))cleanupCandidates.push(candidate);
+    }
+    for(const candidate of cleanupCandidates)await clearAICommentDraft(candidate);
+    return {ok:false,reason:"typeincomplete",box};
   }
   function isAICommentComposer(box){
     if(!box?.isConnected||isMessengerChatBox(box))return false;
@@ -831,7 +1099,7 @@
         const returned=await returnToMainFeedViaHistory();
         if(!returned){
           await chrome.storage.local.set({pendingAIComment:true,pendingAIConfig:{target:aiTarget,minDelay:aiMinDelay/1000,maxDelay:aiMaxDelay/1000,economyMode:aiEconomyMode,batchSize:aiBatchSize,cacheDays:aiCacheDays},aiStatus:t("ai2.offFeed")});
-          location.href="https://www.facebook.com/";
+          if(!await navigateAIToMainFeed())return "stopped";
           return "navigated";
         }
         currentArticle=null;
@@ -859,6 +1127,7 @@
                 isAICommenting:true,
                 aiStatus:t("ai2.reloading",{n:reloadAttempts,from:aiCount,to:aiTarget})
               });
+              if(!await prepareAIPageTransition("tải lại Bảng tin")||(await chrome.storage.local.get("isAICommenting")).isAICommenting===false)return "stopped";
               location.reload();
               return "page-reloading";
             }
@@ -928,6 +1197,7 @@
                   isAICommenting:true,
                   aiStatus:t("ai2.reloading",{n:reloadAttempts,from:aiCount,to:aiTarget})
                 });
+                if(!await prepareAIPageTransition("tải lại Bảng tin")||(await chrome.storage.local.get("isAICommenting")).isAICommenting===false)return "stopped";
                 location.reload();
                 return "page-reloading";
               }
@@ -969,7 +1239,7 @@
             const returned=await returnToMainFeedViaHistory();
             if(!returned){
               await chrome.storage.local.set({pendingAIComment:true,pendingAIConfig:{target:aiTarget,minDelay:aiMinDelay/1000,maxDelay:aiMaxDelay/1000,economyMode:aiEconomyMode,batchSize:aiBatchSize,cacheDays:aiCacheDays},aiStatus:t("ai2.findPost")});
-              location.replace("https://www.facebook.com/");
+              if(!await navigateAIToMainFeed())return "stopped";
               return "navigated";
             }
             currentArticle=null;
@@ -1068,13 +1338,35 @@
       aiCommentDraftBox=box;aiCommentDraftScope=commentScope;
       aiCommentDraftIdentity=targetIdentity||"";aiCommentDraftSignature=postSignature||"";
       // Chỉ nhập chữ ở bước này. Enter và click nút gửi trước đây cùng được
-      // gọi, gây nguy cơ đăng một comment hai lần.
-      const typed=await chrome.runtime.sendMessage({action:"trustedInput",text:commentText,pressEnter:false,typingMinDelay:25,typingMaxDelay:55});
-      if(!typed?.ok){
-        try { box.focus(); document.execCommand("insertText",false,commentText); } catch {}
-      }
-      await sleep(600);
-      if(!typed?.ok && !normalize(box.innerText||box.textContent||box.value).includes(normalize(commentText).slice(0,20))){
+      // gọi, gây nguy cơ đăng một comment hai lần. Chờ đủ toàn bộ nội dung
+      // trong đúng editor trước khi cho phép bấm Gửi.
+      const filled=await fillAndVerifyCommentBox(
+        box,
+        commentText,
+        (preferred)=>{
+          const exact=findExactCommentBox(currentArticle,targetIdentity,postSignature);
+          const exactBox=exact?.box||null;
+          if(exactBox&&normalizeCommentComposerText(commentComposerText(exactBox))===normalizeCommentComposerText(commentText))return exactBox;
+          const replacement=visibleCommentBoxes().find(candidate=>{
+            if(!isAICommentComposer(candidate)||!commentDraftText(candidate))return false;
+            return !!exactCommentScopeForBox(candidate,targetIdentity,postSignature);
+          });
+          return replacement||exactBox||preferred||null;
+        },
+        ()=>isAICommenting&&((chrome.storage.local.get("isAICommenting").then(state=>state.isAICommenting!==false))),
+        {storageKey:"isAICommenting"}
+      );
+      if(filled.box?.isConnected)box=filled.box;
+      if(!filled.ok){
+        if(filled.reason==="draft"){
+          await chrome.storage.local.set({aiStatus:t("ai2.draftBlocked",{from:aiCount,to:aiTarget})});
+          return "stopped";
+        }
+        if(filled.reason==="stopped"){
+          await cleanupAICommentComposer(commentScope,box,"Dừng");
+          isAICommenting=false;
+          return "stopped";
+        }
         await cleanupAICommentComposer(commentScope,box,"thử lại bước nhập",false);
         chrome.storage.local.set({aiStatus:t("ai2.typeFailRetry",{from:aiCount,to:aiTarget})});
         await sleep(1000);
@@ -1132,7 +1424,7 @@
           const returned=await returnToMainFeedViaHistory();
           if(!returned){
             await chrome.storage.local.set({pendingAIComment:true,pendingAIConfig:{target:aiTarget,minDelay:aiMinDelay/1000,maxDelay:aiMaxDelay/1000,economyMode:aiEconomyMode,batchSize:aiBatchSize,cacheDays:aiCacheDays},aiStatus:t("ai2.sentOffFeed")});
-            location.replace("https://www.facebook.com/");
+            if(!await navigateAIToMainFeed())return "stopped";
             return "navigated";
           }
         }
@@ -1244,23 +1536,26 @@
   }
 
   function isMainFacebookFeed(){return location.hostname.endsWith("facebook.com")&&(location.pathname==="/"||location.pathname==="/home.php");}
-  async function returnToMainFeedViaHistory(maxSteps=4){
+  async function returnToMainFeedViaHistory(){
     if(!await prepareAIPageTransition("quay lại Bảng tin"))return false;
-    for(let step=0;step<maxSteps&&!isMainFacebookFeed();step++){
-      if(!location.hostname.endsWith("facebook.com"))return false;
-      try{ history.go(-1); }catch(_){ return false; }
-      // Facebook cập nhật URL theo SPA không đồng bộ. Chờ đến khi thực sự
-      // quay lại / hoặc /home.php, không gọi history.back liên tiếp khi trang
-      // chi tiết còn đang tải vì có thể bỏ qua luôn lịch sử của Bảng tin.
-      for(let i=0;i<32&&!isMainFacebookFeed();i++) await sleep(250);
-      if(isMainFacebookFeed()) return true;
+    if(isMainFacebookFeed())return true;
+    // Only one back action: repeated history.go queued leave prompts and
+    // eventually landed on an unrelated old group. Stop during every wait.
+    if((await chrome.storage.local.get("isAICommenting")).isAICommenting===false)return false;
+    const previousUrl=location.href;
+    history.go(-1);
+    for(let i=0;i<32;i++){
+      await sleep(250);
+      if((await chrome.storage.local.get("isAICommenting")).isAICommenting===false||aiLeaveWarningVisible())return false;
+      if(isMainFacebookFeed())return true;
+      if(location.href!==previousUrl)break;
     }
-    return isMainFacebookFeed();
+    return false;
   }
   async function aiCommentLoop(resume=false){
     if(!isMainFacebookFeed()){
       chrome.storage.local.set({ pendingAIComment: true, pendingAIConfig: { target: aiTarget, minDelay: aiMinDelay/1000, maxDelay: aiMaxDelay/1000,economyMode:aiEconomyMode,batchSize:aiBatchSize,cacheDays:aiCacheDays } });
-      location.href = "https://www.facebook.com/";
+      await navigateAIToMainFeed();
       return;
     }
     chrome.storage.local.remove(["pendingAIComment"]);
@@ -1289,7 +1584,7 @@
       for(let artIndex=0;artIndex<articles.length;artIndex++){
         const art=articles[artIndex];
         if(!isAICommenting || aiCount>=aiTarget) break;
-        if(!isMainFacebookFeed()){await chrome.storage.local.set({pendingAIComment:true,pendingAIConfig:{target:aiTarget,minDelay:aiMinDelay/1000,maxDelay:aiMaxDelay/1000,economyMode:aiEconomyMode,batchSize:aiBatchSize,cacheDays:aiCacheDays},aiStatus:t("ai2.wrongRouteLoop",{from:aiCount,to:aiTarget})});location.href="https://www.facebook.com/";return;}
+        if(!isMainFacebookFeed()){await navigateAIToMainFeed();return;}
         if(art.dataset.aiCommented==="1") continue;
         if(art.dataset.aiFeedCandidate!=="1"||isSponsoredPost(art)){
           chrome.storage.local.set({aiStatus:t("ai2.adSkipped",{from:aiCount,to:aiTarget})});
@@ -1389,6 +1684,7 @@
           continue;
         }
         if(ok==="stopped"){
+          if((await chrome.storage.local.get("isAICommenting")).isAICommenting===false)return;
           lastAiFailure=t("ai2.stoppedPost");
           chrome.storage.local.set({aiStatus:lastAiFailure});
           isAICommenting=false;
@@ -1398,8 +1694,7 @@
           return;
         }
         if(ok==="navigated"){
-          await chrome.storage.local.set({pendingAIComment:true,pendingAIConfig:{target:aiTarget,minDelay:aiMinDelay/1000,maxDelay:aiMaxDelay/1000,economyMode:aiEconomyMode,batchSize:aiBatchSize,cacheDays:aiCacheDays},aiStatus:t("ai2.navBlocked",{from:aiCount,to:aiTarget})});
-          location.href="https://www.facebook.com/";return;
+          await navigateAIToMainFeed();return;
         }
         if(ok===true||ok==="already-commented"){
           if(liveArt.isConnected){
@@ -1503,6 +1798,9 @@
   async function scanJoinedGroups(){
     const skip=new Set(["feed","discover","joins","create","notifications","your_groups"]);
     const map=new Map();
+    // Facebook can concatenate notification words with the actor name, e.g.
+    // "Chưa đọcLão Già...". Do not require a trailing word boundary here.
+    const notificationText=/(?:^|\s)(?:chưa\s*đọc|unread|đã nhắc đến bạn|đã gắn thẻ|đã từ chối|đã gỡ bài(?: viết)?|đã bày tỏ cảm xúc|đã phản hồi bình luận|thích bài viết của bạn|mentioned you|tagged (?:you|everyone)|removed your post|replied to your comment)/i;
     function collect(){
       for(const a of document.querySelectorAll('a[href*="/groups/"]')){
         let url;
@@ -1510,9 +1808,13 @@
         if(url.hostname!==location.hostname) continue;
         const m=url.pathname.match(/^\/groups\/([^/?#]+)/);
         if(!m || skip.has(m[1].toLowerCase())) continue;
+        // The joined-groups screen has notification links and post permalinks
+        // that also start with /groups/<id>. Only a group-home link can be a
+        // selectable destination; never turn a notification into a group.
+        if(!/^\/groups\/[^/?#]+\/?$/i.test(url.pathname)) continue;
         const id=m[1];
         let name=(a.getAttribute("aria-label")||a.innerText||a.textContent||"").trim().replace(/\s+/g," ");
-        if(!name || name.length<2 || name.length>150) continue;
+        if(!name || name.length<2 || name.length>150 || notificationText.test(name)) continue;
         const box=a.closest('div[role="listitem"], div')||a.parentElement;
         const img=a.querySelector("img")||box?.querySelector("img");
         const icon=img?.src||"";
@@ -1536,11 +1838,190 @@
 
   let isGroupInteracting=false;
   let groupStopRequested=false;
+  let isGroupCommenting=false;
+  let groupCommentStopRequested=false;
+  // Composer riêng của Comment AI theo nhóm. Không dùng chung với luồng
+  // Comment AI Bản tin để tránh dọn nhầm bản nháp khi hai state machine đổi
+  // route gần nhau.
+  let groupCommentDraftBox=null;
+  let groupCommentDraftArticle=null;
+  let groupCommentDraftScope=null;
+  let groupCommentDraftIdentity="";
+  let groupCommentDraftSignature="";
+  let groupCommentDraftExpected="";
+  // Facebook có thể giữ một composer nổi của bài trước sau khi đã gửi và
+  // đổi URL sang permalink bài kế tiếp. Giữ một danh sách ngắn các đoạn text
+  // mà chính lượt Comment AI đã sở hữu để dọn orphan composer về sau; không
+  // dùng selector/counter của Comment AI Bản tin hoặc luồng khác.
+  let groupCommentDraftOwnedHistory=[];
+  function groupCommentDraftMatchesExpected(draft,expected){
+    const actual=normalizeCommentComposerText(draft);
+    const wanted=normalizeCommentComposerText(expected);
+    if(actual.length<12||!wanted)return false;
+    return actual===wanted||wanted.startsWith(actual)||wanted.endsWith(actual)||(actual.length>=12&&wanted.includes(actual));
+  }
+  function rememberGroupCommentDraftOwnership(expected,identity,signature){
+    const wanted=normalizeCommentComposerText(expected);
+    if(wanted.length<12)return;
+    groupCommentDraftOwnedHistory=groupCommentDraftOwnedHistory.filter(entry=>entry.text!==wanted);
+    groupCommentDraftOwnedHistory.push({text:wanted,identity:identity||"",signature:signature||"",time:Date.now()});
+    if(groupCommentDraftOwnedHistory.length>40)groupCommentDraftOwnedHistory=groupCommentDraftOwnedHistory.slice(-40);
+  }
+  function clearGroupCommentDraftOwnedHistory(){groupCommentDraftOwnedHistory=[];}
+  function rememberGroupCommentDraft(box,article,identity,signature,expectedText=""){
+    groupCommentDraftBox=box||null;
+    groupCommentDraftArticle=article||null;
+    // Giữ chính lớp chi tiết đã chứa composer được xác nhận rỗng trước khi
+    // gõ. Sau khi gửi, Facebook có thể thay editor bằng một node mới và
+    // tạm thời làm identity/signature của node cha không còn khớp; vẫn được
+    // phép dọn replacement nếu nó nằm trong đúng dialog do lượt này mở.
+    groupCommentDraftScope=box?.closest?.('[role="dialog"]')||null;
+    groupCommentDraftIdentity=identity||"";
+    groupCommentDraftSignature=signature||"";
+    groupCommentDraftExpected=normalizeCommentComposerText(expectedText);
+    rememberGroupCommentDraftOwnership(groupCommentDraftExpected,groupCommentDraftIdentity,groupCommentDraftSignature);
+  }
+  function clearGroupCommentDraftMemory(){
+    groupCommentDraftBox=null;
+    groupCommentDraftArticle=null;
+    groupCommentDraftScope=null;
+    groupCommentDraftIdentity="";
+    groupCommentDraftSignature="";
+    groupCommentDraftExpected="";
+  }
+  function groupCommentRouteMatchesIdentity(identity){
+    const key=String(identity||"").toLowerCase();
+    const match=key.match(/^fb:group:([^:]+):([^:]+)$/);
+    const path=String(location.pathname||"").toLowerCase().replace(/\/+$/,"/");
+    // Trang chi tiết nhóm của Facebook có thể bỏ hẳn role="dialog" và thay
+    // toàn bộ ancestor của composer. Khi đó, permalink hiện tại cùng với
+    // ownership memory của lượt AI là scope hẹp nhất còn lại để nhận diện
+    // replacement; không dùng fallback này trên feed nhóm thông thường.
+    if(!match)return /\/groups\/[^/]+\/(?:posts|permalink)\/[^/]+\//.test(path);
+    const groupPrefix=`/groups/${match[1]}/`;
+    if(!path.includes(groupPrefix))return false;
+    return path.includes(`/posts/${match[2]}/`)||path.includes(`/permalink/${match[2]}/`);
+  }
+  function findGroupCommentDraftReplacement(preferred){
+    const entries=[];
+    if(groupCommentDraftExpected)entries.push({text:groupCommentDraftExpected,identity:groupCommentDraftIdentity,signature:groupCommentDraftSignature});
+    for(const entry of groupCommentDraftOwnedHistory){
+      if(!entries.some(current=>current.text===entry.text))entries.push(entry);
+    }
+    const owned=visibleCommentBoxes().find(candidate=>{
+      const draft=commentDraftText(candidate);
+      // Chỉ dọn text đã được ghi nhận khi ô ban đầu còn rỗng và sau đó được
+      // lượt AI sở hữu. Điều này xử lý cả composer mồ côi sau khi URL đổi,
+      // đồng thời không quét/xóa bản nháp người dùng không khớp text AI.
+      return entries.some(entry=>groupCommentDraftMatchesExpected(draft,entry.text));
+    });
+    if(owned)return owned;
+    const article=groupCommentDraftArticle?.isConnected?groupCommentDraftArticle:null;
+    if(article&&groupCommentDraftIdentity){
+      const exact=findExactCommentBox(article,groupCommentDraftIdentity,groupCommentDraftSignature);
+      if(exact?.box&&commentDraftText(exact.box))return exact.box;
+    }
+    if(groupCommentDraftIdentity){
+      const exact=visibleCommentBoxes().find(candidate=>{
+        if(!isAICommentComposer(candidate)||!commentDraftText(candidate))return false;
+        return !!exactCommentScopeForBox(candidate,groupCommentDraftIdentity,groupCommentDraftSignature);
+      });
+      if(exact)return exact;
+    }
+    return preferred?.isConnected&&commentDraftText(preferred)?preferred:null;
+  }
+  function findAllGroupCommentDraftReplacements(){
+    const entries=[];
+    if(groupCommentDraftExpected)entries.push(groupCommentDraftExpected);
+    for(const entry of groupCommentDraftOwnedHistory){
+      if(!entries.includes(entry.text))entries.push(entry.text);
+    }
+    if(!entries.length)return [];
+    return visibleCommentBoxes().filter(candidate=>entries.some(expected=>groupCommentDraftMatchesExpected(commentDraftText(candidate),expected)));
+  }
+  async function cleanupGroupCommentDraft(preferred){
+    let candidate=preferred||groupCommentDraftBox;
+    const ownedScopes=new Set();
+    for(let attempt=0;attempt<3;attempt++){
+      // Besides the original composer, Facebook may have mounted an overlay
+      // composer for the same post. Clear every owned fragment before a route
+      // change, otherwise Facebook raises its "Rời khỏi trang web?" warning.
+      const candidates=[];
+      for(const box of [candidate,groupCommentDraftBox,findGroupCommentDraftReplacement(candidate),...findAllGroupCommentDraftReplacements()]){
+        if(box?.isConnected&&!candidates.includes(box))candidates.push(box);
+      }
+      for(const box of candidates){
+        if(!commentDraftText(box))continue;
+        const scope=groupCommentDraftIdentity?exactCommentScopeForBox(box,groupCommentDraftIdentity,groupCommentDraftSignature):null;
+        if(scope?.isConnected)ownedScopes.add(scope);
+        const cleared=await clearAICommentDraft(box);
+        if(!cleared)return false;
+      }
+      // The detail overlay can be mounted just after the visible composer
+      // becomes empty, then restore a trailing fragment of the AI text a few
+      // hundred milliseconds later. Keep the ownership memory and wait for a
+      // quiet settle period before closing/navigating, otherwise Facebook
+      // raises its native "Rời khỏi trang?" warning on the next post.
+      await sleep(600);
+      candidate=findGroupCommentDraftReplacement(candidate);
+      if(!candidate||!commentDraftText(candidate)){
+        if(attempt<2) continue;
+        for(const scope of ownedScopes)await closeExactCommentOverlay(scope);
+        clearGroupCommentDraftMemory();
+        return true;
+      }
+    }
+    return !candidate?.isConnected||!commentDraftText(candidate);
+  }
+  function groupCommentLeaveWarningVisible(){
+    return [...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].some(el=>
+      isRenderedElement(el)&&/chưa hoàn tất bình luận|chưa hoàn thành bình luận|rời khỏi trang|haven.t finished your comment|unfinished comment|leave (?:this )?page|discard (?:comment|changes)|bỏ bình luận|hủy bình luận/i.test(el.innerText||el.textContent||""));
+  }
+  // Guard chung trước mọi lần đổi nhóm của Tương tác nhóm/Comment AI.
+  // Facebook gắn beforeunload khi composer còn bản nháp nên điều hướng lúc
+  // này sẽ bật đồng thời cảnh báo native "Rời khỏi trang web?" của Chrome và
+  // hộp thoại "Rời khỏi trang? Bạn chưa hoàn tất bình luận" của Facebook,
+  // làm kẹt phiên như ảnh báo lỗi. Không bao giờ điều hướng xuyên qua các
+  // cảnh báo này: dọn draft do AI sở hữu, đóng overlay, rồi xác minh ô thật
+  // sự rỗng trước khi cho phép chuyển nhóm.
+  async function prepareGroupCommentTransition(mode="reaction",reason="đổi nhóm"){
+    const cleaned=await cleanupGroupCommentDraft();
+    const hasDraft=visibleCommentBoxes().some(box=>commentDraftText(box));
+    if(!cleaned||hasDraft||groupCommentLeaveWarningVisible()){
+      const state=groupModeState(mode);
+      try{
+        await chrome.storage.local.set({[state.statusKey]:t("gi2.transitionBlocked",{reason})});
+      }catch(_){ }
+      return false;
+    }
+    return true;
+  }
+  async function safeGroupNavigate(url,mode="reaction",runId="",reason="đổi nhóm"){
+    if(!url)return false;
+    if(runId&&!await groupModeRunActive(mode,runId))return false;
+    if(!await prepareGroupCommentTransition(mode,reason))return false;
+    if(runId&&!await groupModeRunActive(mode,runId))return false;
+    location.href=url;
+    return true;
+  }
+  function groupModeState(mode="reaction"){
+    return mode==="comment"?{
+      activeKey:"groupCommentActive",runIdKey:"groupCommentRunId",configKey:"groupCommentConfig",indexKey:"groupCommentIndex",doneKey:"groupCommentDone",totalKey:"groupCommentTotal",statusKey:"groupCommentStatus",stopKey:"comment",runFn:groupCommentRunActive
+    }:{
+      activeKey:"groupInteractActive",runIdKey:"groupInteractRunId",configKey:"groupInteractConfig",indexKey:"groupInteractIndex",doneKey:"groupInteractDone",totalKey:"groupInteractTotal",statusKey:"groupInteractStatus",stopKey:"reaction",runFn:groupInteractRunActive
+    };
+  }
   async function groupInteractRunActive(runId){
     if(groupStopRequested)return false;
     const live=await chrome.storage.local.get(["groupInteractActive","groupInteractRunId"]);
     return !!live.groupInteractActive&&!!runId&&live.groupInteractRunId===runId;
   }
+  async function groupCommentRunActive(runId){
+    if(groupCommentStopRequested)return false;
+    const live=await chrome.storage.local.get(["groupCommentActive","groupCommentRunId"]);
+    return !!live.groupCommentActive&&!!runId&&live.groupCommentRunId===runId;
+  }
+  async function groupModeRunActive(mode,runId){return mode==="comment"?groupCommentRunActive(runId):groupInteractRunActive(runId);}
   async function groupSleep(ms,runId=""){
     const end=Date.now()+ms;
     while(Date.now()<end){
@@ -1548,6 +2029,14 @@
       await sleep(Math.min(250,end-Date.now()));
     }
     return !groupStopRequested&&(!runId||await groupInteractRunActive(runId));
+  }
+  async function groupCommentSleep(ms,runId=""){
+    const end=Date.now()+ms;
+    while(Date.now()<end){
+      if(groupCommentStopRequested||(runId&&!await groupCommentRunActive(runId))) return false;
+      await sleep(Math.min(250,end-Date.now()));
+    }
+    return !groupCommentStopRequested&&(!runId||await groupCommentRunActive(runId));
   }
   chrome.storage.onChanged.addListener((changes,areaName)=>{
     if(areaName!=="local") return;
@@ -1557,11 +2046,13 @@
       void cleanupAICommentComposer(undefined,undefined,"Dừng");
     }
     if(changes.groupInteractActive?.newValue===false) groupStopRequested=true;
+    if(changes.groupCommentActive?.newValue===false) groupCommentStopRequested=true;
   });
-  async function groupInteractPostAIComment(article, commentText, expectedIdentity, wantedPath, runId=""){
-    if(runId&&!await groupInteractRunActive(runId)) return "stopped";
+  async function groupInteractPostAIComment(article, commentText, expectedIdentity, wantedPath, runId="",mode="reaction"){
+    const modeStopped=()=>mode==="comment"?groupCommentStopRequested:groupStopRequested;
+    if(runId&&!await groupModeRunActive(mode,runId)) return "stopped";
     if(!article?.isConnected) return "skip";
-    if(isSponsoredPost(article)) return "skip";
+    if(isSponsoredPost(article,{ignoreGenericPreview:mode==="comment"})) return "skip";
     if(article.querySelector('a[href*="/reel/"],a[href*="/watch/"]')) return "skip";
     const normalize=s=>String(s||"").replace(/[\u200B-\u200D\u2060\uFEFF]/g,"").replace(/\s+/g," ").trim().toLowerCase();
     const proof=normalize(commentText).slice(0,60);
@@ -1569,16 +2060,23 @@
     const signature=normalize(extractPostText(article)).slice(0,60);
     let currentArticle=article;
     if(commentProofExists(currentArticle,proof)) return "already-commented";
+    // Dọn orphan composer của các lượt AI trước ngay trước khi mở bài mới.
+    // Nếu chờ tới lúc Facebook đã đổi permalink, chính click mở bài kế tiếp
+    // có thể kích hoạt cảnh báo "Rời khỏi trang?" trước khi cleanup kịp chạy.
+    if(groupCommentDraftOwnedHistory.length||groupCommentDraftExpected){
+      const previousCleaned=await cleanupGroupCommentDraft();
+      if(!previousCleaned)return "draft";
+    }
     const previousBoxes=new Set(visibleCommentBoxes());
     const commentBtn=findCommentButton(currentArticle);
     if(!commentBtn) return "skip";
-    if(runId&&!await groupInteractRunActive(runId)) return "stopped";
-    try{await trustedMouse(commentBtn,"click",()=>groupInteractRunActive(runId));}catch(_){ }
+    if(runId&&!await groupModeRunActive(mode,runId)) return "stopped";
+    try{await trustedMouse(commentBtn,"click",()=>groupModeRunActive(mode,runId));}catch(_){ }
     let box=null,scope=currentArticle;
     for(let wait=0;wait<30;wait++){
-      if(groupStopRequested||(runId&&!await groupInteractRunActive(runId))) return "stopped";
-      const live=await chrome.storage.local.get(["groupInteractActive","groupInteractRunId"]);
-      if(!live.groupInteractActive||(runId&&live.groupInteractRunId!==runId)) return "stopped";
+      if(modeStopped()||(runId&&!await groupModeRunActive(mode,runId))) return "stopped";
+      const live=await chrome.storage.local.get(mode==="comment"?["groupCommentActive","groupCommentRunId"]:["groupInteractActive","groupInteractRunId"]);
+      if(!(mode==="comment"?live.groupCommentActive:live.groupInteractActive)||(runId&&(mode==="comment"?live.groupCommentRunId:live.groupInteractRunId)!==runId)) return "stopped";
       if(wantedPath && !location.pathname.startsWith(wantedPath)) return "navigated";
       if(!currentArticle.isConnected){
         const replacement=expectedIdentity?findFeedPostByIdentity(expectedIdentity):null;
@@ -1586,15 +2084,26 @@
         else{
           // Bài đã rời DOM (Facebook mở trang chi tiết/lớp phủ) nhưng ô nhập
           // có thể đã mở — vẫn nhận ô mới thay vì chờ mù rồi báo timeout.
-          const openedEarly=findCommentBoxOpenedByClick(previousBoxes);
+          const openedEarly=findGroupCommentBoxOpenedByClick(previousBoxes,expectedIdentity,signature);
           if(openedEarly?.box){box=openedEarly.box;scope=openedEarly.scope;currentArticle=openedEarly.scope;break;}
           await sleep(400);continue;
         }
       }
-      const exact=findExactCommentBox(currentArticle,expectedIdentity,signature);
-      if(exact?.box){box=exact.box;scope=exact.scope;break;}
-      const opened=findCommentBoxOpenedByClick(previousBoxes);
+      // Ở permalink Facebook dựng song song card cũ phía sau và bài trong
+      // cửa sổ nổi. Luôn lấy editor trong cửa sổ nổi trước khi xét card cũ;
+      // đây là composer mà người dùng thấy và cũng tránh để lại draft ẩn ở
+      // nền khi chuyển sang bài/nhóm tiếp theo.
+      const detailComposer=findGroupPostDetailComposer(expectedIdentity,signature);
+      if(detailComposer?.box){box=detailComposer.box;scope=detailComposer.scope;currentArticle=detailComposer.scope;break;}
+      // Facebook thường giữ composer rỗng của card cũ rồi mount một composer
+      // mới ở lớp chi tiết. Ưu tiên node mới xuất hiện sau cú click; nếu chọn
+      // node cũ ngay lập tức thì React sẽ chuyển phần gõ xuống node mới, làm
+      // người dùng thấy ô phía trên mở nhưng không có chữ.
+      const opened=findGroupCommentBoxOpenedByClick(previousBoxes,expectedIdentity,signature);
       if(opened?.box){box=opened.box;scope=opened.scope;break;}
+      const exact=findExactCommentBox(currentArticle,expectedIdentity,signature);
+      const exactIsNew=!!(exact?.box&&!previousBoxes.has(exact.box));
+      if(exact?.box&&(exactIsNew||wait>=8)){box=exact.box;scope=exact.scope;break;}
       await sleep(400);
     }
     if(!box||!box.isConnected) return "box-timeout";
@@ -1607,40 +2116,122 @@
       try{await trustedMouse(box,"click");focused=document.activeElement===box||box.contains(document.activeElement);}catch(_){ }
     }
     if(!focused||isMessengerChatBox(document.activeElement)) return "box-timeout";
-    const typed=await chrome.runtime.sendMessage({action:"trustedInput",text:commentText,pressEnter:false,typingMinDelay:25,typingMaxDelay:55}).catch(()=>null);
-    if(!typed?.ok){
-      try{box.focus();document.execCommand("insertText",false,commentText);}catch{ }
+    // Ghi nhớ ngay khi đã xác nhận ô đang rỗng. Nếu Facebook thay composer
+    // giữa lúc gõ, nhánh nhập hụt vẫn phải lần lại đúng bài để dọn phần nháp
+    // do chính lượt Comment AI này tạo ra. Không ghi nhớ ô đã có draft để
+    // không bao giờ dọn nhầm nội dung người dùng.
+    const ownsComposer=!commentComposerText(box);
+    if(ownsComposer) rememberGroupCommentDraft(box,currentArticle,expectedIdentity,signature,commentText);
+    const resolveGroupComposer=(preferred)=>{
+      const detailComposer=findGroupPostDetailComposer(expectedIdentity,signature);
+      if(detailComposer?.box){
+        scope=detailComposer.scope;
+        if(normalizeCommentComposerText(commentComposerText(detailComposer.box))===normalizeCommentComposerText(commentText))return detailComposer.box;
+        if(!commentComposerText(detailComposer.box))return detailComposer.box;
+      }
+      const exact=findExactCommentBox(currentArticle,expectedIdentity,signature);
+      const exactBox=exact?.box||null;
+      if(exact){scope=exact.scope;}
+      if(exactBox&&normalizeCommentComposerText(commentComposerText(exactBox))===normalizeCommentComposerText(commentText))return exactBox;
+      // `preferred` là composer vừa được mở sau cú click. Nếu nó còn rỗng,
+      // giữ focus ở chính node này; không quay ngược về composer cũ đang nằm
+      // phía trên vì Facebook có thể thay node trong lúc bắt đầu gõ.
+      if(preferred?.isConnected&&!commentComposerText(preferred))return preferred;
+      const replacement=findGroupCommentDraftReplacement(preferred||exactBox);
+      return replacement||exactBox||preferred||null;
+    };
+    const typingGuard={
+      storageKey:mode==="comment"?"groupCommentActive":"groupInteractActive",
+      runId,
+      runIdKey:mode==="comment"?"groupCommentRunId":"groupInteractRunId"
+    };
+    let filled=await fillAndVerifyCommentBox(box,commentText,resolveGroupComposer,()=>groupModeRunActive(mode,runId),typingGuard);
+    // Facebook có thể thay composer đúng lúc đang gõ. Nếu lần đầu chỉ tạo
+    // được bản nháp hụt, đã dọn sạch ô do AI sở hữu thì thử lại một lần trên
+    // composer mới của chính bài đó; không chuyển bài và không gửi nội dung
+    // chưa được xác nhận đủ.
+    if(!filled.ok&&filled.reason==="typeincomplete"&&!modeStopped()&&await groupModeRunActive(mode,runId)){
+      await cleanupGroupCommentDraft(filled.box||box);
+      await sleep(500);
+      const retryBox=resolveGroupComposer(box);
+      if(retryBox?.isConnected&&!commentComposerText(retryBox)){
+        rememberGroupCommentDraft(retryBox,currentArticle,expectedIdentity,signature,commentText);
+        filled=await fillAndVerifyCommentBox(retryBox,commentText,resolveGroupComposer,()=>groupModeRunActive(mode,runId),typingGuard);
+      }
     }
-    await sleep(600);
-    if(!typed?.ok && !normalize(box.innerText||box.textContent||box.value).includes(normalize(commentText).slice(0,20))) return "box-timeout";
-    // DỪNG BẰNG MỌI GIÁ: kiểm tra lại ngay trước cú gửi.
-    if(groupStopRequested||(runId&&!await groupInteractRunActive(runId))) return "stopped";
+    if(filled.box?.isConnected)box=filled.box;
+    if(!filled.ok){
+      if(filled.reason==="typeincomplete"||filled.reason==="stopped"){
+        await cleanupGroupCommentDraft(box);
+      }else{
+        clearGroupCommentDraftMemory();
+      }
+      return filled.reason||"typeincomplete";
+    }
+    if(!ownsComposer) clearGroupCommentDraftMemory();
+    // DỪNG BẰNG MỌI GIÁ: kiểm tra lại ngay trước cú gửi. Nếu đã sở hữu
+    // composer và đã gõ nội dung, phải dọn draft trước khi trả về để lần
+    // điều hướng kế tiếp không bật cảnh báo "Rời khỏi trang?".
+    if(modeStopped()||(runId&&!await groupModeRunActive(mode,runId))){
+      await cleanupGroupCommentDraft(box);
+      return "stopped";
+    }
     const guardKey=expectedIdentity||postIdentity(currentArticle);
-    const guardStored=await chrome.storage.local.get("groupInteractCommentGuard");
-    const guard=guardStored.groupInteractCommentGuard&&typeof guardStored.groupInteractCommentGuard==="object"?guardStored.groupInteractCommentGuard:{};
-    if(guardKey){guard[guardKey]={time:Date.now(),source:"group-interact",state:"submitting",runId};await chrome.storage.local.set({groupInteractCommentGuard:guard});}
-    if(runId&&!await groupInteractRunActive(runId))return "stopped";
+    const guardKeyName=mode==="comment"?"groupCommentSubmissionGuard":"groupInteractCommentGuard";
+    const guardStored=await chrome.storage.local.get(guardKeyName);
+    const guard=guardStored[guardKeyName]&&typeof guardStored[guardKeyName]==="object"?guardStored[guardKeyName]:{};
+    if(guardKey){guard[guardKey]={time:Date.now(),source:mode==="comment"?"group-comment":"group-interact",state:"submitting",runId};await chrome.storage.local.set({[guardKeyName]:guard});}
+    if(runId&&!await groupModeRunActive(mode,runId)){
+      await cleanupGroupCommentDraft(box);
+      await closeExactCommentOverlay(scope);
+      return "stopped";
+    }
     const sendBtn=findCommentSendButton(box);
     let submitted=false;
     if(sendBtn&&!isMessengerChatBox(sendBtn)){
-      try{submitted=!!(await trustedMouse(sendBtn,"click",()=>groupInteractRunActive(runId)));}catch{ }
+      try{submitted=!!(await trustedMouse(sendBtn,"click",()=>groupModeRunActive(mode,runId)));}catch{ }
     }else{
       try{const enter=await chrome.runtime.sendMessage({action:"trustedInput",text:"",pressEnter:true,typingMinDelay:0,typingMaxDelay:0});submitted=!!enter?.ok;}catch(_){ }
     }
     if(!submitted){
-      if(guardKey){delete guard[guardKey];await chrome.storage.local.set({groupInteractCommentGuard:guard});}
+      if(guardKey){delete guard[guardKey];await chrome.storage.local.set({[guardKeyName]:guard});}
       return "box-timeout";
     }
     const deadline=Date.now()+30000;
     while(true){
-      if(groupStopRequested||(runId&&!await groupInteractRunActive(runId))) return "stopped";
-      const live=await chrome.storage.local.get(["groupInteractActive","groupInteractRunId"]);
-      if(!live.groupInteractActive||(runId&&live.groupInteractRunId!==runId)) return "stopped";
+      if(modeStopped()||(runId&&!await groupModeRunActive(mode,runId))){
+        await cleanupGroupCommentDraft(box);
+        await closeExactCommentOverlay(scope);
+        return "stopped";
+      }
+      const live=await chrome.storage.local.get(mode==="comment"?["groupCommentActive","groupCommentRunId"]:["groupInteractActive","groupInteractRunId"]);
+      if(!(mode==="comment"?live.groupCommentActive:live.groupInteractActive)||(runId&&(mode==="comment"?live.groupCommentRunId:live.groupInteractRunId)!==runId)){
+        await cleanupGroupCommentDraft(box);
+        await closeExactCommentOverlay(scope);
+        return "stopped";
+      }
       await sleep(500);
       let checkScope=scope?.isConnected?scope:findFeedPostByIdentity(expectedIdentity);
-      if(checkScope&&commentProofExists(checkScope,proof)){await closeExactCommentOverlay(scope);return true;}
-      if(currentArticle?.isConnected&&commentProofExists(currentArticle,proof)){await closeExactCommentOverlay(scope);return true;}
-      if(Date.now()>=deadline){await closeExactCommentOverlay(scope);return "unconfirmed-skip";}
+      // Facebook đôi khi render comment vừa gửi vào lớp chi tiết/overlay
+      // nằm ngoài container bài cũ (đặc biệt khi nút Bình luận mở permalink).
+      // Vẫn ưu tiên xác nhận theo đúng bài; nếu route nhóm đã chuyển sang
+      // permalink thì kiểm tra thêm vùng comment đang hiển thị trên trang.
+      const pageProof=location.pathname.includes("/groups/")&&commentProofExists(document,proof);
+      if((checkScope&&commentProofExists(checkScope,proof))||pageProof){
+        const cleaned=await cleanupGroupCommentDraft(box);
+        await closeExactCommentOverlay(scope);
+        return cleaned?true:"draft";
+      }
+      if(currentArticle?.isConnected&&commentProofExists(currentArticle,proof)){
+        const cleaned=await cleanupGroupCommentDraft(box);
+        await closeExactCommentOverlay(scope);
+        return cleaned?true:"draft";
+      }
+      if(Date.now()>=deadline){
+        await cleanupGroupCommentDraft(box);
+        await closeExactCommentOverlay(scope);
+        return "unconfirmed-skip";
+      }
     }
   }
   async function continueGroupInteraction(){
@@ -1659,7 +2250,10 @@
       }
       if(!await groupInteractRunActive(activeRunId))return;
       if(cfg.targetGroups) cfg={...cfg,groups:cfg.groups.slice(0,Math.max(1,parseInt(cfg.targetGroups)||cfg.groups.length))};
-      const aiCommentEnabled=!!cfg.aiComment;
+      // Like/Random is a standalone run. AI comments have their own start,
+      // counters, guards and resume state below; an old persisted aiComment
+      // flag must never silently combine the two actions again.
+      const aiCommentEnabled=false;
       let index=parseInt(stored.groupInteractIndex)||0;
       let totalDone=parseInt(stored.groupInteractDone)||0;
       let totalAiDone=parseInt(stored.groupInteractAiDone)||0;
@@ -1674,7 +2268,7 @@
       const seenReactionKeys=new Set(Object.keys(reactedKeys));
       Object.entries(reactionGuard).forEach(([key,value])=>{if(value?.runId===activeRunId)seenReactionKeys.add(key);});
       let aiSkipped=(stored.groupInteractAiSkipped&&typeof stored.groupInteractAiSkipped==="object")?stored.groupInteractAiSkipped:{};
-      const AI_SKIP_NAMES={short:t("ai.skip.short"),seen:t("ai.skip.seen"),own:t("ai.skip.own"),nobutton:t("ai.skip.nobutton"),boxtimeout:t("ai.skip.boxtimeout"),unconfirmed:t("ai.skip.unconfirmed"),navigated:t("ai.skip.navigated")};
+      const AI_SKIP_NAMES={short:t("ai.skip.short"),seen:t("ai.skip.seen"),own:t("ai.skip.own"),nobutton:t("ai.skip.nobutton"),boxtimeout:t("ai.skip.boxtimeout"),draft:t("ai.skip.draft"),typeincomplete:t("ai.skip.typeincomplete"),unconfirmed:t("ai.skip.unconfirmed"),navigated:t("ai.skip.navigated"),duplicate:t("ai.skip.duplicate")};
       const aiSkippedTotal=()=>Object.values(aiSkipped).reduce((s,n)=>s+(parseInt(n)||0),0);
       const aiSkipSummary=()=>{const parts=Object.entries(aiSkipped).filter(([,n])=>(parseInt(n)||0)>0).map(([k,n])=>`${n} ${AI_SKIP_NAMES[k]||k}`);return parts.length?t("ai.skippedSummary",{total:aiSkippedTotal(),parts:parts.join(", ")}):"";};
       const noteAiSkip=(reason)=>{aiSkipped[reason]=(parseInt(aiSkipped[reason])||0)+1;};
@@ -1692,14 +2286,16 @@
         if(!await groupInteractRunActive(activeRunId)) return;
         await chrome.storage.local.set({groupInteractStatus:t("gi2.opening",{i:index+1,t:cfg.groups.length,name:group.name})});
         if(!await groupInteractRunActive(activeRunId)) return;
-        location.href=group.url;
+        await safeGroupNavigate(group.url,"reaction",activeRunId,"mở nhóm");
         return;
       }
       await chrome.storage.local.set({groupInteractStatus:t("gi2.interacting",{i:index+1,t:cfg.groups.length,name:group.name})});
       if(!await groupSleep(2500,activeRunId)) return;
       let emptyTries=0;
+      let noProgressRounds=0;
       while(groupDone<cfg.perGroup){
         if(!await groupInteractRunActive(activeRunId)) return;
+        const groupDoneBeforeRound=groupDone;
         let buttons=findFeedLikeButtons();
         if(!buttons.length){
           emptyTries++;
@@ -1776,7 +2372,7 @@
                     noteAiSkip("navigated");
                     if(postKey){seenCommentKeys.add(postKey);commentHistory[postKey]={time:Date.now(),source:"group-interact",contentKey:contentKey||"",navigated:true};}
                     await chrome.storage.local.set({groupInteractDone:totalDone,groupInteractAiDone:totalAiDone,groupInteractCurrentGroupIndex:index,groupInteractCurrentGroupDone:groupDone,groupInteractCurrentGroupAiDone:groupAiDone,groupInteractReactedKeys:reactedKeys,groupInteractReactionGuard:reactionGuard,groupInteractAiSkipped:aiSkipped,groupInteractCommentHistory:commentHistory,groupInteractStatus:t("gi2.postDone",{name:group.name,done:groupDone,per:cfg.perGroup,ai:groupAiStatus(groupDone,groupAiDone)})+t("gi2.navBack")});
-                    location.href=group.url;
+                    await safeGroupNavigate(group.url,"reaction",activeRunId,"quay lại nhóm sau khi Facebook chuyển trang");
                     return;
                   }else if(aiResult==="stopped"){
                     return;
@@ -1790,7 +2386,15 @@
             if(groupDone<cfg.perGroup && !await groupSleep(rand(cfg.minDelay*1000,cfg.maxDelay*1000),activeRunId)) return;
           }catch(e){ console.warn("[Group Interact]",e); }
         }
-        if(groupDone<cfg.perGroup){ window.scrollBy(0,innerHeight*.9); if(!await groupSleep(1500,activeRunId)) return; }
+        if(groupDone<cfg.perGroup){
+          // Facebook can keep the same already-processed reaction buttons in
+          // the DOM forever. A non-empty list is not proof that this round
+          // made progress, so stop retrying the same nodes after a few rounds.
+          noProgressRounds=groupDone===groupDoneBeforeRound?noProgressRounds+1:0;
+          if(noProgressRounds>=3)break;
+          window.scrollBy(0,innerHeight*.9);
+          if(!await groupSleep(1500,activeRunId)) return;
+        }
       }
       if(!await groupInteractRunActive(activeRunId)) return;
       index++;
@@ -1799,7 +2403,7 @@
       if(index<cfg.groups.length){
         if(!await groupSleep(rand(cfg.minDelay*1000,cfg.maxDelay*1000),activeRunId)) return;
         if(!await groupInteractRunActive(activeRunId)) return;
-        location.href=cfg.groups[index].url;
+        await safeGroupNavigate(cfg.groups[index].url,"reaction",activeRunId,"sang nhóm kế tiếp");
       }else{
         if(await groupInteractRunActive(activeRunId))await chrome.storage.local.set({groupInteractActive:false,groupInteractStatus:t("gi2.allDone",{n:cfg.groups.length,done:totalDone,suffix:statusSuffix()})});
       }
@@ -1807,6 +2411,177 @@
       isGroupInteracting=false;
       const next=await chrome.storage.local.get(["groupInteractActive","groupInteractRunId"]);
       if(next.groupInteractActive&&next.groupInteractRunId&&next.groupInteractRunId!==activeRunId)setTimeout(continueGroupInteraction,0);
+    }
+  }
+
+  async function continueGroupComment(){
+    if(isGroupCommenting)return;
+    isGroupCommenting=true;
+    let activeRunId="";
+    try{
+      let stored=await chrome.storage.local.get(["groupCommentActive","groupCommentRunId","groupCommentConfig","groupCommentIndex","groupCommentDone","groupCommentTotal","groupCommentHistory","groupCommentSubmissionGuard","groupCommentProcessedKeys","groupCommentSkipped","groupCommentRetryCounts","groupCommentCurrentGroupIndex","groupCommentCurrentGroupDone"]);
+      let cfg=stored.groupCommentConfig;
+      if(!stored.groupCommentActive||!cfg?.groups?.length)return;
+      activeRunId=String(stored.groupCommentRunId||cfg.runId||"");
+      if(!activeRunId){
+        activeRunId=`group-comment-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+        cfg={...cfg,runId:activeRunId};
+        await chrome.storage.local.set({groupCommentRunId:activeRunId,groupCommentConfig:cfg});
+      }
+      if(!await groupCommentRunActive(activeRunId))return;
+      if(cfg.targetGroups)cfg={...cfg,groups:cfg.groups.slice(0,Math.max(1,parseInt(cfg.targetGroups)||cfg.groups.length))};
+      let index=parseInt(stored.groupCommentIndex)||0;
+      let totalDone=parseInt(stored.groupCommentDone)||0;
+      let commentHistory=stored.groupCommentHistory&&typeof stored.groupCommentHistory==="object"?stored.groupCommentHistory:{};
+      const submissionGuard=stored.groupCommentSubmissionGuard&&typeof stored.groupCommentSubmissionGuard==="object"?stored.groupCommentSubmissionGuard:{};
+      // Lịch sử cũ chỉ là nhật ký/audit, không phải bộ lọc của lượt mới.
+      // Người dùng yêu cầu mọi bài đang thấy được AI đọc và comment; dùng
+      // history xuyên phiên ở đây từng làm các bài mới bị báo nhầm là
+      // "đã xử lý" sau khi Facebook tái dùng permalink/DOM. Chỉ guard của
+      // CHÍNH run hiện tại mới chặn gửi lại một submit còn mơ hồ sau reload.
+      const activeRunSubmissionKeys=new Set();
+      Object.entries(submissionGuard).forEach(([key,value])=>{if(value?.runId===activeRunId)activeRunSubmissionKeys.add(key);});
+      const processedKeys=new Set(Array.isArray(stored.groupCommentProcessedKeys)?stored.groupCommentProcessedKeys:[]);
+      const skipped=stored.groupCommentSkipped&&typeof stored.groupCommentSkipped==="object"?stored.groupCommentSkipped:{};
+      const retryCounts=stored.groupCommentRetryCounts&&typeof stored.groupCommentRetryCounts==="object"?stored.groupCommentRetryCounts:{};
+      const skipNames={short:t("ai.skip.short"),seen:t("ai.skip.seen"),own:t("ai.skip.own"),nobutton:t("ai.skip.nobutton"),boxtimeout:t("ai.skip.boxtimeout"),draft:t("ai.skip.draft"),typeincomplete:t("ai.skip.typeincomplete"),unconfirmed:t("ai.skip.unconfirmed"),navigated:t("ai.skip.navigated"),duplicate:t("ai.skip.duplicate")};
+      const skipTotal=()=>Object.values(skipped).reduce((sum,n)=>sum+(parseInt(n)||0),0);
+      const skipSummary=()=>{const parts=Object.entries(skipped).filter(([,n])=>(parseInt(n)||0)>0).map(([key,n])=>`${n} ${skipNames[key]||key}`);return parts.length?` • ${t("ai.skippedSummary",{total:skipTotal(),parts:parts.join(", ")})}`:"";};
+      const noteSkip=reason=>{skipped[reason]=(parseInt(skipped[reason])||0)+1;};
+      let groupDone=Number(stored.groupCommentCurrentGroupIndex)===index?Math.max(0,parseInt(stored.groupCommentCurrentGroupDone)||0):0;
+      let noProgressRounds=0;
+      if(index>=cfg.groups.length){
+        await chrome.storage.local.set({groupCommentActive:false,groupCommentStatus:t("gi2.commentAllDone",{n:cfg.groups.length,done:totalDone,suffix:skipSummary()})});
+        return;
+      }
+      const group=cfg.groups[index];
+      const wantedPath=new URL(group.url).pathname.replace(/\/$/,"");
+      if(!location.pathname.startsWith(wantedPath)){
+        if(!await groupCommentRunActive(activeRunId))return;
+        await chrome.storage.local.set({groupCommentStatus:t("gi2.commentOpening",{i:index+1,t:cfg.groups.length,name:group.name})});
+        if(!await groupCommentRunActive(activeRunId))return;
+        await safeGroupNavigate(group.url,"comment",activeRunId,"mở nhóm");
+        return;
+      }
+      await chrome.storage.local.set({groupCommentStatus:t("gi2.commentInteracting",{i:index+1,t:cfg.groups.length,name:group.name})});
+      // A group navigation can resolve before Facebook has mounted the first
+      // feed card. On a slow connection the old 2.5s grace period ended the
+      // run while the page was still a skeleton, reporting 0 comments even
+      // though posts appeared a few seconds later. Give the route a longer
+      // bounded settle period, then keep polling below while the feed grows.
+      if(!await groupCommentSleep(6000,activeRunId))return;
+      let emptyTries=0;
+      while(groupDone<cfg.perGroup){
+        if(!await groupCommentRunActive(activeRunId))return;
+        const posts=findGroupCommentPosts();
+        if(!posts.length){
+          emptyTries++;
+          await chrome.storage.local.set({groupCommentStatus:`${t("gi2.commentInteracting",{i:index+1,t:cfg.groups.length,name:group.name})} ${t("gi2.commentWaiting",{try:emptyTries,max:18})}`});
+          window.scrollBy(0,Math.max(850,innerHeight*.8));
+          if(emptyTries>=18)break;
+          if(!await groupCommentSleep(2500,activeRunId))return;
+          continue;
+        }
+        emptyTries=0;
+        const groupDoneBeforeRound=groupDone;
+        for(const post of posts){
+          if(groupDone>=cfg.perGroup||!await groupCommentRunActive(activeRunId))break;
+          if(!post||!post.isConnected)continue;
+          const postText=groupCommentSourceText(post);
+          const postKey=postIdentity(post)||postContentKey(postText);
+          if(postKey&&processedKeys.has(postKey))continue;
+          if(postKey)processedKeys.add(postKey);
+          let result="";
+          if(isSponsoredPost(post,{ignoreGenericPreview:true})||post.querySelector('a[href*="/reel/"],a[href*="/watch/"]')){noteSkip("nobutton");}
+          else if(postKey&&activeRunSubmissionKeys.has(postKey)){noteSkip("seen");}
+          // Không comment chồng lên chính comment đang hiển thị của tài khoản.
+          // Đây là proof trực tiếp từ Facebook, khác với lịch sử nội bộ cũ.
+          else if(hasOwnComment(post)){
+            noteSkip("own");
+            if(postKey)commentHistory[postKey]={time:Date.now(),source:"group-comment",contentKey:postContentKey(postText),existing:true,runId:activeRunId};
+          }
+          else{
+            let commentText="";
+            try{
+              const aiRes=await chrome.runtime.sendMessage({action:"aiGenerateComment",postText:postText.slice(0,500)});
+              if(!aiRes?.ok)throw new Error(aiRes?.error||"AI failed");
+              commentText=sanitizeCommentOutput(String(aiRes.comment||"").trim()).replace(/[!！]+\s*$/g,"").trimEnd();
+            }catch(error){console.warn("[Group Comment AI]",error);commentText=fallbackComment(postText);}
+            if(!commentText){noteSkip("nobutton");}
+            else{
+              result=await groupInteractPostAIComment(post,commentText,postKey,wantedPath,activeRunId,"comment");
+              if(result===true||result==="already-commented"){
+                groupDone++;totalDone++;
+                if(postKey)delete retryCounts[postKey];
+                if(postKey){activeRunSubmissionKeys.add(postKey);commentHistory[postKey]={time:Date.now(),source:"group-comment",contentKey:postContentKey(postText),runId:activeRunId};}
+                if(post.isConnected)post.style.outline="2px solid #9c27b0";
+              }else if(result==="unconfirmed-skip"){
+                noteSkip("unconfirmed");
+                if(postKey){activeRunSubmissionKeys.add(postKey);commentHistory[postKey]={time:Date.now(),source:"group-comment",contentKey:postContentKey(postText),unconfirmed:true,runId:activeRunId};}
+              }else if(result==="navigated"){
+                const attempts=postKey?(parseInt(retryCounts[postKey])||0)+1:4;
+                if(postKey&&attempts<=3){
+                  retryCounts[postKey]=attempts;
+                  processedKeys.delete(postKey);
+                  await chrome.storage.local.set({groupCommentIndex:index,groupCommentDone:totalDone,groupCommentCurrentGroupIndex:index,groupCommentCurrentGroupDone:groupDone,groupCommentHistory:commentHistory,groupCommentProcessedKeys:[...processedKeys].slice(-500),groupCommentRetryCounts:retryCounts,groupCommentSkipped:skipped,groupCommentStatus:`${t("gi2.commentNavBack")} Thử lại bài ${attempts}/3`});
+                  await safeGroupNavigate(group.url,"comment",activeRunId,"quay lại nhóm để thử lại bài");
+                  return;
+                }
+                noteSkip("navigated");
+                await chrome.storage.local.set({groupCommentIndex:index,groupCommentDone:totalDone,groupCommentCurrentGroupIndex:index,groupCommentCurrentGroupDone:groupDone,groupCommentHistory:commentHistory,groupCommentProcessedKeys:[...processedKeys].slice(-500),groupCommentSkipped:skipped,groupCommentStatus:t("gi2.commentNavBack")});
+                await safeGroupNavigate(group.url,"comment",activeRunId,"quay lại nhóm sau khi Facebook chuyển trang");
+                return;
+              }else if(result==="stopped")return;
+              else if(result==="boxtimeout"||result==="typeincomplete"){
+                const attempts=postKey?(parseInt(retryCounts[postKey])||0)+1:4;
+                if(postKey&&attempts<=3){
+                  retryCounts[postKey]=attempts;
+                  processedKeys.delete(postKey);
+                }else noteSkip(result==="typeincomplete"?"typeincomplete":"boxtimeout");
+              }else noteSkip(result==="skip"?"nobutton":result==="draft"?"draft":"boxtimeout");
+            }
+          }
+          await chrome.storage.local.set({groupCommentDone:totalDone,groupCommentCurrentGroupIndex:index,groupCommentCurrentGroupDone:groupDone,groupCommentHistory:commentHistory,groupCommentProcessedKeys:[...processedKeys].slice(-500),groupCommentRetryCounts:retryCounts,groupCommentSkipped:skipped,groupCommentStatus:t("gi2.commentPostDone",{name:group.name,done:groupDone,per:cfg.perGroup,suffix:skipSummary()})});
+          // Sau proof Facebook đôi lúc giữ URL permalink và dialog của bài
+          // vừa comment thêm một nhịp. Nếu tiếp tục quét ở route đó, mọi card
+          // nền có thể mang cùng permalink và editor của bài kế tiếp không
+          // còn mở đúng chỗ, dẫn tới nhiều lần "không thấy ô nhập". Quay về
+          // route gốc của nhóm sau từng lượt đã xử lý; tiến trình/history đã
+          // được persist ở trên nên reload/resume không đăng lặp.
+          const currentPath=location.pathname.replace(/\/$/,"");
+          if((result===true||result==="already-commented")&&groupDone<cfg.perGroup&&currentPath!==wantedPath){
+            await safeGroupNavigate(group.url,"comment",activeRunId,"quay lại nhóm sau khi comment");
+            return;
+          }
+          if(groupDone<cfg.perGroup&&!await groupCommentSleep(rand(cfg.minDelay*1000,cfg.maxDelay*1000),activeRunId))return;
+        }
+        if(groupDone<cfg.perGroup){
+          // Facebook often leaves the same visible cards in place while the
+          // next batch is still loading. Give the group feed several bounded
+          // scroll/load rounds before concluding there are no more candidates;
+          // two rounds was too short on a slow connection and could end a
+          // configured 5-post run while the third card was arriving.
+          // The cap still prevents an unchanged DOM from running forever.
+          noProgressRounds=groupDone===groupDoneBeforeRound?noProgressRounds+1:0;
+          if(noProgressRounds>=6)break;
+          window.scrollBy(0,innerHeight*.9);
+          if(!await groupCommentSleep(2500,activeRunId))return;
+        }
+      }
+      if(!await groupCommentRunActive(activeRunId))return;
+      index++;
+      await chrome.storage.local.set({groupCommentIndex:index,groupCommentDone:totalDone,groupCommentCurrentGroupIndex:index,groupCommentCurrentGroupDone:0,groupCommentProcessedKeys:[],groupCommentRetryCounts:{},groupCommentSkipped:skipped,groupCommentHistory:commentHistory,groupCommentStatus:t("gi2.commentGroupDone",{name:group.name,done:groupDone,per:cfg.perGroup,suffix:skipSummary()})});
+      if(index<cfg.groups.length){
+        if(!await groupCommentSleep(rand(cfg.minDelay*1000,cfg.maxDelay*1000),activeRunId))return;
+        if(!await groupCommentRunActive(activeRunId))return;
+        await safeGroupNavigate(cfg.groups[index].url,"comment",activeRunId,"sang nhóm kế tiếp");
+      }else if(await groupCommentRunActive(activeRunId)){
+        await chrome.storage.local.set({groupCommentActive:false,groupCommentStatus:t("gi2.commentAllDone",{n:cfg.groups.length,done:totalDone,suffix:skipSummary()})});
+      }
+    }finally{
+      isGroupCommenting=false;
+      const next=await chrome.storage.local.get(["groupCommentActive","groupCommentRunId"]);
+      if(next.groupCommentActive&&next.groupCommentRunId&&next.groupCommentRunId!==activeRunId)setTimeout(continueGroupComment,0);
     }
   }
 
@@ -1855,7 +2630,7 @@
     const mode=input?.mode==="fixed"?"fixed":"random",fixedColor=allowed.includes(input?.fixedColor)?input.fixedColor:"pink";
     // Tôn trọng lựa chọn bật/tắt nền; khi bật nền, nhóm không có bảng màu sẽ được bỏ qua.
     const enabled=input?.enabled!==false;
-    return {enabled,mode,fixedColor,colors,maxChars:Math.min(140,Math.max(40,parseInt(input?.maxChars)||100)),fallback:"skip",afterBgMin:GROUP_POST_AUTO.afterBgMin,afterBgMax:GROUP_POST_AUTO.afterBgMax,typingMin:GROUP_POST_AUTO.typingMin,typingMax:GROUP_POST_AUTO.typingMax,beforePostMin:GROUP_POST_AUTO.beforePostMin,beforePostMax:GROUP_POST_AUTO.beforePostMax};
+    return {enabled,mode,fixedColor,colors,maxChars:Math.min(130,Math.max(40,parseInt(input?.maxChars)||100)),fallback:"skip",afterBgMin:GROUP_POST_AUTO.afterBgMin,afterBgMax:GROUP_POST_AUTO.afterBgMax,typingMin:GROUP_POST_AUTO.typingMin,typingMax:GROUP_POST_AUTO.typingMax,beforePostMin:GROUP_POST_AUTO.beforePostMin,beforePostMax:GROUP_POST_AUTO.beforePostMax};
   }
   function chooseGroupPostColor(background,lastColor){
     if(background.mode==="fixed")return background.fixedColor;
@@ -2554,8 +3329,9 @@
       const runId=String(msg.runId||`group-interact-${Date.now()}-${Math.random().toString(36).slice(2,8)}`);
       const requestedGroups=Math.max(1,parseInt(msg.targetGroups)||(msg.groups||[]).length||1);
       const limitedGroups=(msg.groups||[]).slice(0,Math.min(requestedGroups,(msg.groups||[]).length));
-      const cfg={groups:limitedGroups,perGroup:Math.max(1,parseInt(msg.perGroup)||5),minDelay:Math.max(1,parseInt(msg.minDelay)||5),maxDelay:Math.max(1,parseInt(msg.maxDelay)||12),reaction:msg.reaction||"random",targetGroups:requestedGroups,aiComment:!!msg.aiComment,runId,ownerTabId:(sender&&sender.tab&&sender.tab.id)||msg.ownerTabId||0};
-      chrome.storage.local.get(["groupInteractActive","groupInteractRunId"]).then(current=>{
+      const cfg={groups:limitedGroups,perGroup:Math.max(1,parseInt(msg.perGroup)||5),minDelay:Math.max(1,parseInt(msg.minDelay)||5),maxDelay:Math.max(1,parseInt(msg.maxDelay)||12),reaction:msg.reaction||"random",targetGroups:requestedGroups,runId,ownerTabId:(sender&&sender.tab&&sender.tab.id)||msg.ownerTabId||0};
+      chrome.storage.local.get(["groupInteractActive","groupInteractRunId","groupCommentActive"]).then(current=>{
+        if(current.groupCommentActive){sendResponse({ok:false,error:t("p.giBusyOtherMode")});return;}
         if(current.groupInteractActive&&current.groupInteractRunId===runId){
           groupStopRequested=false;
           sendResponse({ok:true,resumed:true});
@@ -2564,6 +3340,8 @@
         }
         if(current.groupInteractActive&&current.groupInteractRunId!==runId){sendResponse({ok:false,error:t("p.giStartFail")});return;}
         groupStopRequested=false;
+        clearGroupCommentDraftMemory();
+        clearGroupCommentDraftOwnedHistory();
         chrome.storage.local.set({groupInteractActive:true,groupInteractRunId:runId,groupInteractConfig:cfg,groupInteractIndex:0,groupInteractDone:0,groupInteractAiDone:0,groupInteractTotal:cfg.groups.length*cfg.perGroup,groupInteractCurrentGroupIndex:0,groupInteractCurrentGroupDone:0,groupInteractCurrentGroupAiDone:0,groupInteractReactedKeys:{},groupInteractReactionGuard:{},groupInteractCommentGuard:{},groupInteractStatus:t("gi2.starting")}).then(()=>{sendResponse({ok:true});setTimeout(continueGroupInteraction,200);});
       });
       return true;
@@ -2586,9 +3364,52 @@
       });return true;
     } else if(msg.action==="stopGroupPost"){
       groupPostStopRequested=true;chrome.storage.local.set({groupPostActive:false,groupPostNextAt:0,groupPostStatus:t("p.gpStopped")}).then(()=>sendResponse({ok:true}));return true;
+    } else if(msg.action==="startGroupComment"){
+      const runId=String(msg.runId||`group-comment-${Date.now()}-${Math.random().toString(36).slice(2,8)}`);
+      const requestedGroups=Math.max(1,parseInt(msg.targetGroups)||(msg.groups||[]).length||1);
+      const limitedGroups=(msg.groups||[]).slice(0,Math.min(requestedGroups,(msg.groups||[]).length));
+      const cfg={groups:limitedGroups,perGroup:Math.max(1,parseInt(msg.perGroup)||5),minDelay:Math.max(1,parseInt(msg.minDelay)||5),maxDelay:Math.max(1,parseInt(msg.maxDelay)||12),targetGroups:requestedGroups,runId,ownerTabId:(sender&&sender.tab&&sender.tab.id)||msg.ownerTabId||0};
+      chrome.storage.local.get(["groupCommentActive","groupCommentRunId","groupInteractActive"]).then(current=>{
+        if(current.groupInteractActive){sendResponse({ok:false,error:t("p.giBusyOtherMode")});return;}
+        if(current.groupCommentActive&&current.groupCommentRunId===runId){
+          groupCommentStopRequested=false;sendResponse({ok:true,resumed:true});setTimeout(continueGroupComment,0);return;
+        }
+        if(current.groupCommentActive&&current.groupCommentRunId!==runId){sendResponse({ok:false,error:t("p.giStartFail")});return;}
+        groupCommentStopRequested=false;
+        clearGroupCommentDraftMemory();
+        clearGroupCommentDraftOwnedHistory();
+        chrome.storage.local.set({groupCommentActive:true,groupCommentRunId:runId,groupCommentConfig:cfg,groupCommentIndex:0,groupCommentDone:0,groupCommentTotal:cfg.groups.length*cfg.perGroup,groupCommentCurrentGroupIndex:0,groupCommentCurrentGroupDone:0,groupCommentHistory:{},groupCommentSubmissionGuard:{},groupCommentProcessedKeys:[],groupCommentRetryCounts:{},groupCommentSkipped:{},groupCommentStatus:t("gi2.commentStarting")}).then(()=>{sendResponse({ok:true});setTimeout(continueGroupComment,200);});
+      });
+      return true;
     } else if(msg.action==="stopGroupInteract"){
       groupStopRequested=true;
-      chrome.storage.local.set({groupInteractActive:false,groupInteractStatus:t("p.stopped")}).then(()=>sendResponse({ok:true}));
+      chrome.storage.local.set({groupInteractActive:false,groupInteractStatus:t("p.stopped")}).then(()=>{
+        void (async()=>{await cleanupGroupCommentDraft();clearGroupCommentDraftMemory();clearGroupCommentDraftOwnedHistory();})();
+        sendResponse({ok:true});
+      });
+      return true;
+    } else if(msg.action==="stopGroupComment"){
+      groupCommentStopRequested=true;
+      chrome.storage.local.set({groupCommentActive:false,groupCommentStatus:t("p.stopped")}).then(()=>{
+        void (async()=>{await cleanupGroupCommentDraft();clearGroupCommentDraftMemory();clearGroupCommentDraftOwnedHistory();})();
+        sendResponse({ok:true});
+      });
+      return true;
+    } else if(msg.action==="resetGroupInteract"){
+      groupStopRequested=true;
+      // Reset mở phiên mới nhưng giữ lịch sử chống trùng để không thả cảm
+      // xúc lặp vào cùng bài; chỉ zero bộ đếm/guards/tiến trình nhóm hiện tại.
+      document.querySelectorAll('[data-feed-interacted="1"]').forEach(el=>{delete el.dataset.feedInteracted;el.style.outline="";});
+      void (async()=>{await cleanupGroupCommentDraft();clearGroupCommentDraftMemory();clearGroupCommentDraftOwnedHistory();})();
+      chrome.storage.local.set({groupInteractActive:false,groupInteractRunId:"",groupInteractIndex:0,groupInteractDone:0,groupInteractAiDone:0,groupInteractTotal:0,groupInteractCurrentGroupIndex:0,groupInteractCurrentGroupDone:0,groupInteractCurrentGroupAiDone:0,groupInteractReactionGuard:{},groupInteractCommentGuard:{},groupInteractAiSkipped:{},groupInteractStatus:t("gi.reactionResetDone")}).then(()=>sendResponse({ok:true}));
+      return true;
+    } else if(msg.action==="resetGroupComment"){
+      groupCommentStopRequested=true;
+      // Reset chỉ zero bộ đếm/phiên đang chạy, giữ groupCommentHistory để
+      // phiên mới không comment lặp vào bài đã xử lý (giống Reset Comment AI
+      // Bản tin). Dọn luôn draft do AI sở hữu để không kẹt cảnh báo rời trang.
+      void (async()=>{await cleanupGroupCommentDraft();clearGroupCommentDraftMemory();clearGroupCommentDraftOwnedHistory();})();
+      chrome.storage.local.set({groupCommentActive:false,groupCommentRunId:"",groupCommentIndex:0,groupCommentDone:0,groupCommentTotal:0,groupCommentCurrentGroupIndex:0,groupCommentCurrentGroupDone:0,groupCommentSubmissionGuard:{},groupCommentProcessedKeys:[],groupCommentRetryCounts:{},groupCommentSkipped:{},groupCommentStatus:t("gi.commentResetDone")}).then(()=>sendResponse({ok:true}));
       return true;
     } else if(msg.action==="startFeedInteract"){
       if(isFeedInteracting){ sendResponse({ok:false}); return true; }
@@ -2632,7 +3453,7 @@
 
   // tu dong tiep tuc sau khi redirect tu popup
   (async ()=>{
-    const p = await chrome.storage.local.get(["pendingFeedInteract","pendingFeedConfig","pendingAIComment","pendingAIConfig","groupInteractActive","groupInteractConfig","groupInteractIndex","groupPostActive","groupPostConfig","groupPostIndex","isAICommenting","aiActiveConfig","aiCount","aiNextAllowedAt"]);
+    const p = await chrome.storage.local.get(["pendingFeedInteract","pendingFeedConfig","pendingAIComment","pendingAIConfig","groupInteractActive","groupInteractConfig","groupInteractIndex","groupCommentActive","groupCommentConfig","groupCommentIndex","groupPostActive","groupPostConfig","groupPostIndex","isAICommenting","aiActiveConfig","aiCount","aiNextAllowedAt"]);
     // Phiên nhóm đang chạy nhưng tab không ở route nhóm (vd: reload rớt ra
     // ngoài, người dùng chuyển trang): tự về đúng nhóm rồi tiếp tục.
     const groupTaskUrl=(cfgKey,indexKey)=>{
@@ -2654,6 +3475,10 @@
       }
       else{const targetUrl=groupTaskUrl("groupInteractConfig","groupInteractIndex");if(targetUrl)location.assign(targetUrl);}
     }
+    if(p.groupCommentActive && (await runOwnedByThisTab(p.groupCommentConfig&&p.groupCommentConfig.ownerTabId))){
+      if(location.href.includes("facebook.com/groups/")){await sleep(1200);continueGroupComment();}
+      else{const targetUrl=groupTaskUrl("groupCommentConfig","groupCommentIndex");if(targetUrl)location.assign(targetUrl);}
+    }
     if(p.pendingFeedInteract && p.pendingFeedConfig && p.isFeedInteracting!==false && (await runOwnedByThisTab(p.pendingFeedConfig.ownerTabId)) && location.href.includes("facebook.com")){
       if(!isMainFacebookFeed()){ location.href="https://www.facebook.com/"; return; }
       const cfg = p.pendingFeedConfig;
@@ -2674,7 +3499,7 @@
       await sleep(2500);
       aiCount=parseInt(p.aiCount)||0;
       if(aiCount>=aiTarget)aiCount=0;
-      if(!isMainFacebookFeed()){location.href="https://www.facebook.com/";return;}
+      if(!isMainFacebookFeed()){await navigateAIToMainFeed();return;}
       // DỪNG BẰNG MỌI GIÁ: thoát ngay nếu cờ chạy đã tắt trong lúc chờ.
       while(Date.now()<(parseInt(p.aiNextAllowedAt)||0)){
         const aliveNow=await chrome.storage.local.get("isAICommenting");
@@ -2690,7 +3515,7 @@
       if(!isAICommenting){ isAICommenting=true; chrome.storage.local.set({ isAICommenting:true }); aiCommentLoop(aiCount>0); }
     }else if(p.isAICommenting&&p.aiActiveConfig&&(await runOwnedByThisTab(p.aiActiveConfig.ownerTabId))){
       const cfg=p.aiActiveConfig;aiTarget=parseInt(cfg.target)||10;setAiDelayRange(cfg.minDelay,cfg.maxDelay);aiEconomyMode=cfg.economyMode||"balanced";aiBatchSize=parseInt(cfg.batchSize)||5;aiCacheDays=parseInt(cfg.cacheDays)||7;aiCount=parseInt(p.aiCount)||0;
-      if(!isMainFacebookFeed()){await chrome.storage.local.set({pendingAIComment:true,pendingAIConfig:cfg,aiStatus:t("ai2.resumeFeed",{from:aiCount,to:aiTarget})});location.href="https://www.facebook.com/";return;}
+      if(!isMainFacebookFeed()){await navigateAIToMainFeed();return;}
       await sleep(1800);if(!isAICommenting){isAICommenting=true;aiCommentLoop(true);}
     }
   })();

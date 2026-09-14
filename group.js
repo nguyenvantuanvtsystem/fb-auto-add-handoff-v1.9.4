@@ -12,6 +12,25 @@
 
   function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
   function randDelay(){ return Math.floor(Math.random()*(maxDelay-minDelay+1))+minDelay; }
+  async function waitJoinDelay(){
+    const until=Date.now()+randDelay();
+    let lastShown=-1;
+    while(true){
+      if(!isJoining)return false;
+      try{
+        const live=await chrome.storage.local.get("isGroupJoining");
+        if(!live.isGroupJoining){isJoining=false;return false;}
+      }catch{return false;}
+      const remaining=until-Date.now();
+      if(remaining<=0)return true;
+      const seconds=Math.max(1,Math.ceil(remaining/1000));
+      if(seconds!==lastShown){
+        lastShown=seconds;
+        chrome.storage.local.set({groupStatus:t("kj.waitDelay",{s:seconds,from:joinedCount,to:targetJoin})});
+      }
+      await sleep(Math.min(500,remaining));
+    }
+  }
   // Quy tắc DỪNG BẰNG MỌI GIÁ + chống chạy trùng: phiên resume sau reload chỉ
   // được chạy trên đúng tab sở hữu (ownerTabId). Tab khác thấy cờ nhưng bỏ qua.
   async function runOwnedByThisTab(ownerTabId){
@@ -85,15 +104,50 @@
     if(!await clickGroupControl(close))return false;
     return await waitForCondition(()=>!visibleMembershipDialog(),3500);
   }
-  async function waitForJoinConfirmation(button,container,timeout=30000,href="",initialLabel=""){
+  // Facebook can leave a request in a transient state for noticeably longer
+  // than a normal DOM rerender.  This is deliberately a single post-click
+  // wait: never click the Join control again while it is pending. The user
+  // can configure the wait in seconds; old runs without this field keep 90s.
+  const DEFAULT_JOIN_CONFIRM_SECONDS=90;
+  const MIN_JOIN_CONFIRM_SECONDS=5;
+  const MAX_JOIN_CONFIRM_SECONDS=600;
+  let joinConfirmTimeout=DEFAULT_JOIN_CONFIRM_SECONDS*1000;
+  function normalizeJoinConfirmTimeout(value){
+    const seconds=Number.parseInt(value,10);
+    const safe=Number.isFinite(seconds)?seconds:DEFAULT_JOIN_CONFIRM_SECONDS;
+    return Math.min(MAX_JOIN_CONFIRM_SECONDS,Math.max(MIN_JOIN_CONFIRM_SECONDS,safe))*1000;
+  }
+  async function waitForJoinConfirmation(button,container,timeout=joinConfirmTimeout,href="",initialLabel="",statusKey="",groupName=""){
     // Dùng nhãn chụp trước cú bấm. Facebook đôi khi đổi nút sang
     // “Truy cập” trước khi hàm xác nhận bắt đầu chạy.
     const initialButton=cleanText(initialLabel||labelOf(button));
     const end=Date.now()+timeout;
     let detachedAt=0;
+    let lastReported=-1;
+    let lateQuestionHandled=false;
     while(Date.now()<end){
       if(!isJoinActive())return false;
-      if(visibleMembershipDialog()){await sleep(500);continue;}
+      const elapsed=Math.max(0,Math.floor((timeout-(end-Date.now()))/1000));
+      // A 700ms poll rarely lands on an exact 5-second boundary. Report the
+      // highest elapsed 5-second bucket instead of requiring `elapsed % 5`
+      // to be zero, otherwise the visible status can freeze at 30/90.
+      const reported=Math.floor(elapsed/5)*5;
+      if(statusKey&&reported>lastReported){
+        lastReported=reported;
+        chrome.storage.local.set({[statusKey]:t("gq.waitJoinProof",{name:groupName||t("kj.groupAny"),seconds:reported,max:Math.ceil(timeout/1000)})});
+      }
+      // A membership dialog can arrive after the initial short dialog wait.
+      // Handle it once here so a slow Facebook response still gets the same
+      // AI/question flow, without ever re-clicking the original Join button.
+      if(visibleMembershipDialog()){
+        if(!lateQuestionHandled){
+          lateQuestionHandled=true;
+          const answered=await autoAnswerGroupQuestions(groupName,button);
+          if(!answered&&visibleMembershipDialog())return false;
+        }
+        await sleep(500);
+        continue;
+      }
       // React có thể thay toàn bộ card sau khi gửi yêu cầu. Tìm lại card
       // theo URL nhóm để không mất tín hiệu thành công khi node cũ detached.
       let currentContainer=container;
@@ -225,6 +279,7 @@
       if(aiJoinEnabled&&aiIndexes.length){
         const aiQuestions=aiIndexes.map(index=>questions[index]);
         chrome.storage.local.set({groupStatus:t("gq.aiThinking",{n:aiQuestions.length,name:groupName||t("kj.groupSel")})});
+        chrome.storage.local.set({groupAiUsage:t("gq.aiWriting",{n:aiQuestions.length,name:groupName||t("kj.groupSel")})});
         try{
           const ai=await chrome.runtime.sendMessage({action:"aiAnswerJoinQuestions",groupName:groupName||document.title,questions:aiQuestions,prompt:aiJoinPrompt,aiConfig:aiJoinConfig});
           if(ai?.ok){
@@ -234,8 +289,14 @@
         const missing=aiIndexes.filter(index=>!answers[index]);
         if(missing.length){
           chrome.storage.local.set({groupStatus:t("gq.aiShort",{from:aiIndexes.length-missing.length,to:aiIndexes.length,name:groupName||t("kj.groupAny")})});
+          chrome.storage.local.set({groupAiUsage:t("gq.aiFailed",{name:groupName||t("kj.groupAny")} )});
           return false;
         }
+        chrome.storage.local.set({groupAiUsage:t("gq.aiReady",{n:aiIndexes.length,name:groupName||t("kj.groupSel")})});
+      }else if(aiIndexes.length){
+        chrome.storage.local.set({groupAiUsage:t("gq.aiOff",{n:aiIndexes.length,name:groupName||t("kj.groupSel")})});
+      }else if(inputs.length){
+        chrome.storage.local.set({groupAiUsage:t("gq.rulesOnly",{name:groupName||t("kj.groupSel")})});
       }
       let filled=0;
       for(let idx=0;idx<inputs.length;idx++){
@@ -303,6 +364,24 @@
     return Math.round(num);
   }
 
+  function groupNameFromCard(container,href,fallbackLink){
+    const links=[...(container?.querySelectorAll?.('a[href*="/groups/"]')||[])]
+      .filter(link=>link.href.split("?")[0]===href);
+    for(const link of links){
+      const name=cleanText(link.innerText||link.textContent||"");
+      if(name&&name.length<=120&&!successJoinLabel.test(name))return name;
+    }
+    const aria=cleanText(fallbackLink?.getAttribute?.("aria-label")||"")
+      .replace(/^ảnh đại diện của\s+/i,"").trim();
+    return aria||href;
+  }
+
+  function findGroupJoinControl(container){
+    if(!container)return null;
+    const controls=[...container.querySelectorAll('button,[role="button"],a[role="button"]')];
+    return controls.find(control=>/^(?:tham gia(?:\s+nhóm)?|join(?:\s+group)?)(?:\s|$)/i.test(labelOf(control)))||null;
+  }
+
   function extractGroupCards(){
     const candidates = [];
     document.querySelectorAll('a[href*="/groups/"]').forEach(a=>{
@@ -331,28 +410,11 @@
           if(alt) postsPerDay = parseInt(alt[1]) > 50 ? 10 : parseInt(alt[1]);
         }
       }
-      let joinBtn = null;
-      const btns = container.querySelectorAll('div[role="button"], a[role="button"], span');
-      for(const b of btns){
-        const t = (b.innerText || b.textContent || "").trim().toLowerCase();
-        if(t==="tham gia nhóm" || t==="tham gia" || t==="join group" || t==="join" || t==="tham gia nhóm" ){
-          const clickable = b.closest('div[role="button"]') || b;
-          if(clickable.offsetParent !== null) { joinBtn = clickable; break; }
-        }
-      }
-      if(!joinBtn){
-        const nearBtns = document.querySelectorAll('div[role="button"]');
-        for(const b of nearBtns){
-          const t=(b.innerText||"").trim().toLowerCase();
-          if(t.includes("tham gia") || t==="join" || t==="join group"){
-            if(container.contains(b) || b.closest('div[data-pagelet]')===container) { joinBtn=b; break; }
-          }
-        }
-      }
+      const joinBtn=findGroupJoinControl(container);
       const joinedTxt = txt.includes("đã tham gia") || txt.includes("joined") || txt.includes("đã gửi yêu cầu") || txt.includes("request sent");
       if(joinedTxt) return;
       container.dataset.groupParsed="1";
-      candidates.push({ container, href, name: (a.innerText || a.textContent || href).trim().slice(0,80), members, memberText, postsPerDay, joinBtn, rawText: txtOrig.slice(0,300) });
+      candidates.push({ container, href, name:groupNameFromCard(container,href,a).slice(0,120), members, memberText, postsPerDay, joinBtn, rawText: txtOrig.slice(0,300) });
     });
     return candidates;
   }
@@ -363,7 +425,7 @@
 
   async function joinLoop(keyword, restoredJoined){
     if(!location.href.includes("/search/groups")){
-      chrome.storage.local.set({ pendingSearchJoin: true, pendingSearchKeyword: keyword, pendingSearchConfig: { minMembers, minPostsPerDay, targetJoin, minDelay, maxDelay, autoAnswers,aiJoinEnabled,aiJoinPrompt,aiJoinConfig } });
+      chrome.storage.local.set({ pendingSearchJoin: true, pendingSearchKeyword: keyword, pendingSearchConfig: { minMembers, minPostsPerDay, targetJoin, minDelay, maxDelay, autoAnswers,confirmWaitSeconds:joinConfirmTimeout/1000,aiJoinEnabled,aiJoinPrompt,aiJoinConfig } });
       const url = `https://www.facebook.com/search/groups/?q=${encodeURIComponent(keyword)}`;
       location.href = url;
       return;
@@ -371,7 +433,7 @@
     chrome.storage.local.remove(["pendingSearchJoin","pendingSearchKeyword","pendingSearchConfig"]);
     isJoining = true;
     joinedCount = Math.max(0,parseInt(restoredJoined)||0);
-    chrome.storage.local.set({ groupStatus: restoredJoined?t("kj.resumed",{kw:keyword,from:joinedCount,to:targetJoin}):t("kj.searching",{kw:keyword}), groupJoined:joinedCount, groupFound:0 });
+    chrome.storage.local.set({ groupStatus: restoredJoined?t("kj.resumed",{kw:keyword,from:joinedCount,to:targetJoin}):t("kj.searching",{kw:keyword}), groupJoined:joinedCount, groupFound:0,groupAiUsage:t("gq.aiWaiting") });
     let idle=0;
     let seenHrefs = new Set();
     let totalFound=0;
@@ -396,15 +458,21 @@
           const answered = await autoAnswerGroupQuestions(g.name,g.joinBtn);
           if(!answered&&visibleMembershipDialog()){chrome.storage.local.set({groupStatus:t("kj.notEnoughAnswers",{name:g.name})});await closeMembershipDialog();await sleep(700);continue;}
           chrome.storage.local.set({groupStatus:t("kj.waitConfirm",{name:g.name})});
-          const confirmed=await waitForJoinConfirmation(g.joinBtn,g.container,30000,g.href,beforeJoinLabel);
-          if(!confirmed){chrome.storage.local.set({groupStatus:t("kj.unconfirmed",{name:g.name})});continue;}
+          const confirmed=await waitForJoinConfirmation(g.joinBtn,g.container,joinConfirmTimeout,g.href,beforeJoinLabel,"groupStatus",g.name);
+          if(!confirmed){
+            chrome.storage.local.set({groupStatus:t("kj.unconfirmed",{name:g.name})});
+            // Even an unconfirmed click must obey the configured pacing
+            // before another irreversible join attempt.
+            if(!await waitJoinDelay())break;
+            continue;
+          }
           joinedCount++;
           const extra = answered ? " (da tu tra loi cau hoi)" : "";
           chrome.storage.local.set({ groupJoined: joinedCount, groupStatus: `Da gui yeu cau ${joinedCount}/${targetJoin}: ${g.name} (${g.memberText})${extra}` });
           console.log(`[Group] Join confirmed ${joinedCount}; answered=${answered}`);
         }catch(e){ console.warn("[Group] click loi",e); }
         if(joinedCount >= targetJoin) break;
-        await sleep(randDelay());
+        if(!await waitJoinDelay())break;
       }
       if(joinedCount >= targetJoin) break;
       const before = document.body.scrollHeight;
@@ -427,6 +495,7 @@
     minPostsPerDay=parseInt(cfg.minPostsPerDay)||0;
     minDelay=(parseInt(cfg.minDelay)||5)*1000;
     maxDelay=(parseInt(cfg.maxDelay)||15)*1000;
+    joinConfirmTimeout=normalizeJoinConfirmTimeout(cfg.confirmWaitSeconds);
     if(cfg.answers && Array.isArray(cfg.answers) && cfg.answers.length>0){
       autoAnswers = cfg.answers;
     } else if(cfg.answersText!==undefined){
@@ -458,6 +527,7 @@
       target: discoverTarget,
       minDelay: discoverMinDelay/1000,
       maxDelay: discoverMaxDelay/1000,
+      confirmWaitSeconds: joinConfirmTimeout/1000,
       answersText: autoAnswers.join("\n"),
       aiJoinEnabled,
       aiJoinPrompt,
@@ -468,6 +538,7 @@
     discoverTarget = Math.max(1,parseInt(cfg.target)||10);
     discoverMinDelay = Math.max(1,parseInt(cfg.minDelay)||5)*1000;
     discoverMaxDelay = Math.max(discoverMinDelay,Math.max(1,parseInt(cfg.maxDelay)||15)*1000);
+    joinConfirmTimeout=normalizeJoinConfirmTimeout(cfg.confirmWaitSeconds);
     if(cfg.answersText!==undefined){
       autoAnswers = String(cfg.answersText||"").split("\n").map(s=>s.trim()).filter(Boolean);
       if(autoAnswers.length===0)autoAnswers=[defJoinAnswers()[0]];
@@ -508,46 +579,67 @@
   }
   function randDiscoverDelay(){ return Math.floor(Math.random()*(discoverMaxDelay-discoverMinDelay+1))+discoverMinDelay; }
 
+  async function waitDiscoverDelay(){
+    const until=Date.now()+randDiscoverDelay();
+    let lastShown=-1;
+    while(true){
+      if(!isDiscoverJoining)return false;
+      try{
+        const live=await chrome.storage.local.get("isDiscoverJoining");
+        if(!live.isDiscoverJoining){isDiscoverJoining=false;return false;}
+      }catch{return false;}
+      const remaining=until-Date.now();
+      if(remaining<=0)return true;
+      const seconds=Math.max(1,Math.ceil(remaining/1000));
+      if(seconds!==lastShown){
+        lastShown=seconds;
+        chrome.storage.local.set({discoverStatus:t("dj.waitDelay",{s:seconds,from:discoverJoined,to:discoverTarget})});
+      }
+      await sleep(Math.min(500,remaining));
+    }
+  }
+
+  function discoverSuggestionsRoot(){
+    const heading=[...document.querySelectorAll('h1,h2,h3,[role="heading"]')].find(el=>/^(?:gợi ý khác|other suggestions|more suggestions|suggested groups)$/i.test(cleanText(el.innerText||el.textContent||"")));
+    if(!heading)return null;
+    // Facebook đặt heading và các card cùng một container. Lấy ancestor nhỏ
+    // nhất thực sự có nút Tham gia, không quét cả trang /groups/discover
+    // (vốn còn khu "Nhóm của bạn bè" ở phía trên).
+    for(let node=heading.parentElement,depth=0;node&&depth<6;node=node.parentElement,depth++){
+      const controls=[...node.querySelectorAll('button,[role="button"],a[role="button"]')];
+      if(controls.some(control=>/^(?:tham gia(?:\s+nhóm)?|join(?:\s+group)?)(?:\s|$)/i.test(labelOf(control))))return node;
+    }
+    return null;
+  }
+
+  function discoverCardForButton(button,root){
+    for(let node=button.parentElement,depth=0;node&&node!==root&&depth<10;node=node.parentElement,depth++){
+      const text=cleanText(node.innerText||"");
+      const link=[...node.querySelectorAll('a[href*="/groups/"]')].find(a=>a.href&&!/\/groups\/(?:discover|joins|feed)(?:\/|$)/i.test(a.href));
+      if(link&&/(?:thành viên|members?)/i.test(text))return {container:node,link};
+    }
+    return {container:button.parentElement||button,link:null};
+  }
+
   function extractDiscoverCards(){
     const candidates = [];
-    // tren trang facebook.com/groups/discover hoac /groups/ - moi card la div chua "Tham gia nhóm"
-    document.querySelectorAll('div[role="button"]').forEach(btn=>{
-      const t = (btn.innerText||"").trim().toLowerCase();
-      if(t !== "tham gia nhóm" && t !== "tham gia" && t !== "join group" && t !== "join") return;
+    const root=discoverSuggestionsRoot();
+    if(!root)return candidates;
+    // Chỉ quét controls trong khu "Gợi ý khác". Facebook có thể dùng div
+    // role=button hoặc button thật tùy bản render, vì vậy không khóa theo tag.
+    root.querySelectorAll('button,[role="button"],a[role="button"]').forEach(btn=>{
+      if(!/^(?:tham gia(?:\s+nhóm)?|join(?:\s+group)?)(?:\s|$)/i.test(labelOf(btn))) return;
       if(btn.dataset.discoverParsed==="1") return;
-      if(btn.offsetParent===null) return;
+      if(!isVisible(btn)) return;
       // bo nut da tham gia / da gui
-      const container = btn.closest('div[data-pagelet], div[style*="border"], div') || btn.parentElement;
-      const txt = (container ? container.innerText : btn.parentElement.innerText || "").toLowerCase();
+      const card=discoverCardForButton(btn,root),container=card.container;
+      const txt = (container?.innerText||"").toLowerCase();
       if(txt.includes("đã tham gia") || txt.includes("joined") || txt.includes("đã gửi")) return;
-      // tim link nhom gan do
-      let href = "";
-      let name = "";
-      let node=btn;
-      for(let depth=0;node&&depth<10&&!href;depth++,node=node.parentElement){
-        const linkEl=[...node.querySelectorAll('a[href*="/groups/"]')].find(a=>a.href&&!/\/groups\/(?:discover|joins|feed)(?:\/|$)/i.test(a.href));
-        if(linkEl){
-          href=linkEl.href.split("?")[0];
-          name=cleanText(linkEl.innerText||linkEl.textContent||"").slice(0,120);
-        }
-      }
+      const href=card.link?.href?.split("?")[0]||"";
+      const name=href?groupNameFromCard(container,href,card.link).slice(0,120):"";
       btn.dataset.discoverParsed="1";
       candidates.push({ btn, href, name, container });
     });
-    // fallback: tim tat ca nut Tham gia nhom con sot
-    if(candidates.length===0){
-      document.querySelectorAll('span').forEach(s=>{
-        const t=(s.innerText||"").trim().toLowerCase();
-        if(t==="tham gia nhóm"){
-          const btn=s.closest('div[role="button"]');
-          if(btn && btn.dataset.discoverParsed!=="1" && btn.offsetParent!==null){
-            btn.dataset.discoverParsed="1";
-            const container=btn.closest('div');
-            candidates.push({ btn, href:"", name:cleanText(container?.innerText||"").slice(0,120), container });
-          }
-        }
-      });
-    }
     return candidates;
   }
 
@@ -587,19 +679,20 @@
       const cards = extractDiscoverCards();
       if(cards.length===0){
         idle++;
-        if(idle>=2){
-          window.scrollTo(0, document.body.scrollHeight);
-          await sleep(2500);
-          const more = extractDiscoverCards();
-          if(more.length===0 && idle>=4){
-            endStatus=t("dj.outOfGroups",{from:discoverJoined,to:discoverTarget});
-            break;
-          }
-        } else {
-          window.scrollBy(0, 800);
-          await sleep(1500);
-          continue;
+        // /groups/discover thường dựng heading trước, nhưng card "Gợi ý
+        // khác" có thể về muộn 15–30 giây (đặc biệt sau route do lịch chạy
+        // mở tab nền). Bốn lượt cũ chỉ chờ ~9 giây nên báo hết nhóm giả.
+        // Chờ tối đa 18 lượt x 2,5 giây, vẫn polling Stop trong sleep ở các
+        // bước sau và chỉ cuộn nhẹ định kỳ để kích hoạt lazy render.
+        if(idle>=18){
+          endStatus=t("dj.outOfGroups",{from:discoverJoined,to:discoverTarget});
+          break;
         }
+        chrome.storage.local.set({discoverStatus:t("dj.waitCards",{n:idle,max:18,from:discoverJoined,to:discoverTarget})});
+        if(idle%3===0)window.scrollTo(0,document.body.scrollHeight);
+        else window.scrollBy(0,700);
+        await sleep(2500);
+        continue;
       } else idle=0;
 
       for(const c of cards){
@@ -617,16 +710,22 @@
           if(!clicked){chrome.storage.local.set({discoverStatus:t("dj.noJoinBtn")});continue;}
           const answered = await autoAnswerGroupQuestions(c.name||"",c.btn);
           if(!answered&&visibleMembershipDialog()){chrome.storage.local.set({discoverStatus:t("dj.notEnoughAnswers")});await closeMembershipDialog();await sleep(700);continue;}
-          chrome.storage.local.set({discoverStatus:t("dj.waitConfirm",{from:discoverJoined+1,to:discoverTarget})});
-          const confirmed=await waitForJoinConfirmation(c.btn,c.container,30000,c.href,beforeJoinLabel);
-          if(!confirmed){chrome.storage.local.set({discoverStatus:t("dj.unconfirmed")});continue;}
+          chrome.storage.local.set({discoverStatus:t("dj.waitConfirm",{name:c.name||t("kj.groupAny"),from:discoverJoined+1,to:discoverTarget})});
+          const confirmed=await waitForJoinConfirmation(c.btn,c.container,joinConfirmTimeout,c.href,beforeJoinLabel,"discoverStatus",c.name||t("kj.groupAny"));
+          if(!confirmed){
+            chrome.storage.local.set({discoverStatus:t("dj.unconfirmed",{name:c.name||t("kj.groupAny")})});
+            // Cú bấm đã được phát đi dù Facebook không trả proof; vẫn phải
+            // giữ giãn cách để không chuyển qua các card liên tiếp quá nhanh.
+            if(!await waitDiscoverDelay())break;
+            continue;
+          }
           discoverJoined++;
           const extra = answered ? " (da tra loi)" : "";
-          chrome.storage.local.set({ discoverJoined, discoverStatus: `Da tham gia ${discoverJoined}/${discoverTarget}${extra}` });
+          chrome.storage.local.set({ discoverJoined, discoverStatus: `Da tham gia ${discoverJoined}/${discoverTarget}: ${c.name||t("kj.groupAny")}${extra}` });
           console.log(`[Discover] Join confirmed ${discoverJoined}/${discoverTarget}; answered=${answered}`);
         }catch(e){ console.warn(e); }
         if(discoverJoined >= discoverTarget) break;
-        await sleep(randDiscoverDelay());
+        if(!await waitDiscoverDelay())break;
       }
       if(discoverJoined >= discoverTarget) break;
       window.scrollTo(0, document.body.scrollHeight);
@@ -667,9 +766,16 @@
       sendResponse({ok:true});
     } else if(msg.action==="startDiscoverJoin"){
       if(isDiscoverJoining||isJoining){ sendResponse({ok:false, msg:t("kj.busy"), code:"join-busy"}); return true; }
+      // Storage là nguồn để resume sau điều hướng, còn cờ nội bộ quyết định
+      // vòng lặp đang sống trong document hiện tại. Phải bật cả hai trước
+      // discoverLoop(); nếu chỉ ghi storage, while(isDiscoverJoining) sẽ kết
+      // thúc ngay trên lượt Start trực tiếp từ popup hoặc scheduler.
+      isDiscoverJoining=true;
+      discoverJoined=0;
       discoverTarget = parseInt(msg.target)||10;
       discoverMinDelay = (parseInt(msg.minDelay)||5)*1000;
       discoverMaxDelay = (parseInt(msg.maxDelay)||15)*1000;
+      joinConfirmTimeout=normalizeJoinConfirmTimeout(msg.confirmWaitSeconds);
       if(msg.answersText){
         autoAnswers = msg.answersText.split("\n").map(s=>s.trim()).filter(Boolean);
         if(autoAnswers.length===0) autoAnswers = [defJoinAnswers()[0]];
@@ -741,7 +847,7 @@
       if(!(await runOwnedByThisTab(s.groupJoinRunConfig&&s.groupJoinRunConfig.ownerTabId)))return;
       const cfg = s.pendingSearchConfig;
       if(cfg){
-        minMembers = cfg.minMembers; minPostsPerDay = cfg.minPostsPerDay; targetJoin = cfg.targetJoin; minDelay=cfg.minDelay; maxDelay=cfg.maxDelay; autoAnswers=cfg.autoAnswers||autoAnswers;aiJoinEnabled=!!cfg.aiJoinEnabled;aiJoinPrompt=cfg.aiJoinPrompt||"";aiJoinConfig=cfg.aiJoinConfig||{};
+        minMembers = cfg.minMembers; minPostsPerDay = cfg.minPostsPerDay; targetJoin = cfg.targetJoin; minDelay=cfg.minDelay; maxDelay=cfg.maxDelay; autoAnswers=cfg.autoAnswers||autoAnswers;joinConfirmTimeout=normalizeJoinConfirmTimeout(cfg.confirmWaitSeconds);aiJoinEnabled=!!cfg.aiJoinEnabled;aiJoinPrompt=cfg.aiJoinPrompt||"";aiJoinConfig=cfg.aiJoinConfig||{};
       }
       chrome.storage.local.remove(["pendingSearchJoin","pendingSearchKeyword","pendingSearchConfig"]);
       await sleep(2500);

@@ -1,4 +1,4 @@
-# FB Auto Tool v1.9.32 — Hướng dẫn cài đặt và sử dụng
+# FB Auto Tool v1.9.133 — Hướng dẫn cài đặt và sử dụng
 
 Tài liệu này dành cho người dùng cuối. Extension chạy trên Google Chrome và thao tác trên tài khoản Facebook đang đăng nhập trong trình duyệt.
 
@@ -10,7 +10,7 @@ Sau khi giải nén, thư mục extension phải có tối thiểu các file sau
 - `popup.html`
 - `popup.js`
 - `background.js`
-- `content.js`, `feed.js`, `group.js`, `scrape.js`, `share.js`, `sales.js`, `trend.js`, `i18n.js`
+- `content.js`, `feed.js`, `group.js`, `page.js`, `pageStore.js`, `scrape.js`, `share.js`, `sales.js`, `trend.js`, `i18n.js`
 - `icon128.png`
 
 Không đổi tên hoặc di chuyển riêng lẻ các file này. Extension không chứa sẵn API Key hay cookie Facebook; các thông tin đó không nằm trong file ZIP.
@@ -57,7 +57,7 @@ Không xóa thư mục cấu hình Chrome hoặc dữ liệu trình duyệt đ�
 
 ## 4. Cấu hình AI dùng chung
 
-Các tính năng Comment AI, Đăng bài AI, Học nhóm, Share bài, Đăng bán và trả lời câu hỏi tham gia nhóm dùng cấu hình AI chung.
+Các tính năng Comment AI, Đăng bài AI, Học nhóm, Share bài, Đăng bán, Nuôi Page và trả lời câu hỏi tham gia nhóm dùng cấu hình AI chung.
 
 1. Mở tab **📰 Bản tin & AI** hoặc khu vực cấu hình AI trong **👥 Nhóm**.
 2. Chọn **AI Provider**: OpenAI, Gemini, Claude, Groq, OpenRouter, DeepSeek, Mistral hoặc Custom (OpenAI-compatible).
@@ -174,7 +174,7 @@ Giữ nguyên biến nếu prompt của tính năng yêu cầu biến đó. Nên
 
 ### A. 🤝 Kết bạn
 
-Tab này có ba chế độ:
+Tab này có bốn chế độ:
 
 #### 1) Theo gợi ý
 
@@ -201,6 +201,18 @@ Tab này có ba chế độ:
 5. Bấm **Bắt đầu** để chỉ xác nhận các hồ sơ đạt bộ lọc.
 
 Luồng xác nhận lời mời chỉ dùng thông tin công khai Facebook đang hiển thị và chỉ tính thành công khi Facebook xác nhận đã trở thành bạn bè.
+
+#### 4) Theo bạn của bạn
+
+1. Chọn **Theo bạn của bạn**.
+2. Nhập link profile nguồn; hoặc chọn **Từ danh sách bạn bè của tôi**, bấm **Tải danh sách bạn bè của tôi**, tìm tên và chọn nguồn.
+3. Đặt giãn cách Min–Max và số lời mời tối đa.
+4. Bấm **Bắt đầu kết bạn từ link này** hoặc **Bắt đầu kết bạn từ nguồn đã chọn**. Nút **Bắt đầu** phía trên cũng chạy nguồn đang chọn.
+5. Tiện ích mở danh sách của nguồn, gửi lần lượt và tải thêm khi cần. Phiên tự tiếp tục sau khi Facebook chuyển route bằng SPA hoặc reload, nên chỉ cần bấm Start một lần; không cần quét hết trước.
+
+Người đã là bạn bè, đã gửi lời mời hoặc có lịch sử gửi được bỏ qua. Nút Hủy lời mời không được bấm. Lần chạy sau giữ lịch sử, kể cả lượt gửi chưa xác minh rõ. Khi gặp dialog hoặc kết quả mơ hồ, phiên dừng để bạn kiểm tra.
+
+**Dừng** ngừng phiên; **Reset** xóa tiến trình và giữ danh sách nguồn/lịch sử chống trùng. **Xóa lịch sử chống trùng** là thao tác riêng, chỉ dùng khi bạn chủ động muốn bỏ lịch sử. Chưa hỗ trợ hẹn lịch.
 
 ### B. 📄 Cào bài và tạo hồ sơ văn phong
 
@@ -333,6 +345,38 @@ Luồng này chỉ xử lý Bản tin chính, bỏ qua bài quảng cáo/sponsor
 7. Bấm **Bắt đầu AI comment**.
 
 Comment chỉ được tính thành công khi Facebook hiển thị comment ngoài ô nhập. Nếu API lỗi, extension có thể dùng câu dự phòng an toàn; nếu Facebook không xác minh được việc gửi, bài sẽ không bị tính thành công và không tự gửi lại liên tục.
+
+### K. 🌱 Nuôi Page — Page tham gia nhóm, đăng bài, theo dõi và comment
+
+Tab này dùng tư cách **Fanpage đang quản trị**, không phải nick cá nhân.
+
+1. Mở tab **Nuôi Page**, bấm **Tải Page đang quản trị** rồi chọn đúng Page muốn dùng. Extension sẽ xác minh Facebook đang hoạt động với đúng Page trước khi thao tác.
+
+#### 1) Page tham gia nhóm
+
+1. Chọn **Theo từ khóa** rồi nhập từ khóa tìm nhóm, hoặc chọn **Theo nhóm đề xuất**.
+2. Đặt số nhóm muốn tham gia và delay Min–Max.
+3. Nhập câu trả lời mẫu, mỗi dòng một câu. Có thể bật **Dùng AI trả lời câu hỏi nhóm**; câu hỏi nội quy đơn giản dùng câu mẫu, câu hỏi mở mới gọi AI theo prompt có `{groupName}` và `{questions}`.
+4. Bấm **Page tham gia nhóm**.
+
+#### 2) Page đăng bài nhóm bằng AI
+
+1. Dán nhóm đích, mỗi dòng một URL, có thể ghi `URL | Tên nhóm`.
+2. Đặt số nhóm muốn đăng, delay và prompt tạo bài.
+3. Bấm **Đăng bài nhóm bằng Page**. AI đọc chủ đề nhóm và các bài gần đây để tạo một bài mở thảo luận, không đăng lại cùng nội dung.
+
+#### 3) Theo dõi Page theo từ khóa
+
+1. Nhập từ khóa Page, số Page muốn theo dõi, follower tối thiểu và từ khóa loại trừ.
+2. Bấm **Theo dõi Page**. Danh sách Page đã theo dõi được lưu riêng để dùng cho Comment AI.
+
+#### 4) Comment AI bằng Page
+
+1. Chọn nguồn bài: **Bản tin** hoặc **Page đã theo dõi**.
+2. Đặt số bài muốn comment, delay và prompt Comment AI.
+3. Bấm **Comment bằng Page**.
+
+> Mọi thao tác Page chỉ được tính thành công khi Facebook xác nhận đúng tư cách Page đã chọn. Nếu Facebook chưa chuyển sang Page hoặc chưa xác minh được, phiên sẽ dừng để kiểm tra thay vì thao tác bằng nick cá nhân.
 
 ## 7. Dừng, tiếp tục và xử lý lỗi
 

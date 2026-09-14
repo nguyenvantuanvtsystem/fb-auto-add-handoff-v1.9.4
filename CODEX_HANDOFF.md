@@ -1,13 +1,104 @@
 # Codex handoff — FB Auto Tool
 
+## v1.9.133 — Navigation resume for source streaming
+
+- The direct friend-of-friend stream now schedules an owner-tab/run-ID guarded resume before every source-profile/Friends-list navigation. This covers Facebook SPA route changes where the content script remains alive, while the existing bootstrap handles hard reloads.
+- Stop/reset and a new run cancel stale resume timers; a short retry waits for the previous loop to exit. No live friend request was sent during verification.
+
+## v1.9.132 — Stream requests from the selected source
+
+- Start snapshots source/config and opens its Friends list, handling single-profile cards in DOM order before loading more. No source pre-scan/preview queue or candidate navigation.
+- Durable write-ahead history prevents retries across Stop/Reset/reload/new runs; no TTL or legacy 2,000-entry pruning. Resolve exact card and Add Friend label immediately before synchronous click. Pending/Friends labels are never clicked.
+- Proof is scoped to the candidate card. Ambiguous results/dialogs stop for inspection. Legacy preview runs require an explicit restart with source.
+- Validation: seven mocked regressions in tests/fof-stream.test.cjs and required syntax checks. No real request sent for this release.
+
+## v1.9.131 — Friends list batch-loading fix
+
+- Fixed both friend-of-friend scanners stopping on Facebook's first rendered batch. The loading marker is now treated as a signal to keep scrolling; it no longer suppresses the scroll that triggers the next batch.
+- The resolver handles Facebook's split layouts explicitly: the current account's `/friends/list/` is mounted under `role=navigation`, while a source profile's Friends list remains scoped to `role=main`.
+- Every cycle re-discovers the list/scroller, moves to the current tail and polls DOM progress while checking Stop/run ID every 500 ms. Completion requires two independent no-progress samples at the bottom with no loading marker; 320 rounds, 5,000 profiles or 120 seconds without progress fail closed as partial.
+- Read-only live DOM verification covered the current-account Friends route and a source profile's full Friends route: scrolling caused both roots to append additional profiles. No Add Friend control was clicked.
+
+## v1.9.130 — Friends-of-friend source scan and preview queue
+
+- Friend tab adds a separate `friend-of-friend` mode. The source can be an explicit Facebook profile link, or a profile selected by name from the current account's scanned Friends list.
+- The mode scans only Friends links/lists exposed by Facebook to the current account, verifies the source route, deduplicates candidates by profile key, and requires a preview before sending. Hidden or unavailable lists are reported as restricted/unknown/partial instead of treated as empty.
+- Scan and send use separate state, run IDs, stop paths, counters, history and success proof. Friend-of-friend scheduling is rejected because the source-scan and preview phases must be completed interactively first.
+
+## v1.9.129 — Page Care UI temporarily paused
+
+- The popup no longer renders the Page Care tab/panel, new Page schedule choices, or Page cards in the Run Center. A stale `popupLastTab: "page"` falls back safely to the Add-friend tab.
+- Page source, stored settings, and isolated state machines remain in place; restoring the UI does not require a data migration or reset.
+
+## v1.9.128 — Page actor picker recovery and fail-closed stop
+
+- Nuôi Page recognizes Facebook's profile picker even when the picker root is exposed through `aria-modal`/profile markers, loads more Pages, and searches the picker when the configured Page is not initially visible. After selecting a Page, it reopens the picker and requires a selected/acting-as marker; a `Switch to...` option or click alone is never proof.
+- After two consecutive actor-verification failures, Page group join stops with a clear unavailable-Page status instead of mass-skipping groups. The `pageGroupJoin*` state, run ID, counter, and proof remain isolated.
+- Skip reasons are no longer overwritten immediately by the loop progress status. Open-question AI requests have a 30-second timeout and continue polling Stop/run ID.
+
+## v1.9.127 — Verify actor menu after click
+
+- Nuôi Page now verifies that Facebook's actor menu actually appeared after the click. If a trusted coordinate dispatch reports success while the menu remains closed during a header rerender, it retries once with the DOM click and still requires Page identity evidence before processing.
+
+## v1.9.126 — Fixed actor visibility detection
+
+- Nuôi Page no longer rejects Facebook's fixed `Trang cá nhân của bạn` actor button just because its `offsetParent` is `null`; `page.js` now uses computed visibility and viewport dimensions. Other feature state machines remain separate.
+
+## v1.9.125 — Selected Page actor evidence
+
+- `actorEvidence()` now accepts Facebook's `đang chọn` / `selected` marker for the configured Page, in addition to acting-as labels. This prevents a successful Page selection from being treated as unverified.
+
+## v1.9.124 — Load more Page actor options
+
+- When Facebook's identity picker exposes `Xem thêm trang` / `See more pages`, Page actor selection loads more options up to eight times before failing closed. It re-finds the configured Page after each render and still requires actor evidence after selection.
+
+## v1.9.123 — Full Page-list actor selection
+
+- Page actor selection now opens Facebook's `Xem tất cả trang cá nhân` / `See all profiles` when the configured Page is not in the quick-switch options, then selects the Page from the refreshed menu. Join, Post, Watch and Comment keep separate Page state/proof.
+
+## v1.9.122 — Page actor switch label fix
+
+- Page join/post actor resolvers now include Facebook's current `Trang cá nhân của bạn` / `Your profile` / `Your account` identity-menu labels, so the configured Page can be selected before processing. Page state, selectors, counters and proof remain separate.
+
+## v1.9.121 — Page running-label translation fix
+
+- `popup.js` now uses the existing `pg.busy` dictionary key for the Page group-join running button. The raw `p.pgBusy` key no longer appears; Page state machine, selectors, counters and proof are unchanged.
+
+## v1.9.120 — Stable Suggestions order
+
+- Friend Suggestions now preserves Facebook DOM order from `querySelectorAll()` and no longer sorts candidates by viewport coordinates. This keeps the queue top-to-bottom across scroll/re-render cycles.
+- Existing “request sent” cards remain excluded because they have no valid Add Friend control. The change is isolated to `collectCandidates()` in `content.js`; Group-common and confirmation state machines are unchanged.
+
+## v1.9.119 — Inline schedule controls
+
+- Mỗi feature panel có ô `datetime-local` và nút `📅 Hẹn lịch cấu hình này` riêng: Friend, Scrape, Feed, AI Feed, Group Interact, Group Comment, Group Post, Share, Sales, Trend Learn, Trend Post, Page Group Join, Page Group Post, Page Watch và Page Comment. Keyword/Discover giữ control inline đã có.
+- `popup.js` chỉ bind các nút này vào `createFeatureSchedule()`/`scheduleSnapshot()` theo feature; background scheduler, route, state, counter và success proof không bị tách/ghép lại.
+- Khi sửa thêm feature schedule, phải giữ đủ 17 binding, không đưa API key vào snapshot, và cập nhật bộ kiểm tra static/syntax.
+
+## v1.9.118 — Schedule entry point always visible
+
+- `popup.html` thêm nút `📅 Lịch chạy` ở đầu popup, dùng lại `showTab("schedule")`; đây chỉ là shortcut UI, không thay đổi adapter hay state machine của feature.
+
+## v1.9.117 — Schedule adapters for all features
+
+- `popup.html`/`popup.js` have a dedicated Schedule tab and `scheduledTasks` UI. The list is an observer/manager only; it never drives Facebook DOM directly.
+- `background.js` owns `chrome.alarms` using `fb-auto-schedule:`. It blocks a due task if any existing feature active flag is true, and records `blocked` rather than interrupting work.
+- The Schedule tab now has feature-specific adapters for Friend, Scrape, Feed/AI, joined-group interaction/comment/post, Discover/Keyword Join, Share, Sales, Trend Learn/Post and Page Join/Post/Watch/Comment. Each adapter snapshots only its own route/config/state and calls the feature's existing Start or resume message.
+- Schedule snapshots omit API keys. The unified AI configuration is read at due time; media schedules keep only a manifest/plan and use the existing local media store at runtime.
+
+## v1.9.106 — Trung tâm tiến trình
+
+- `popup.html/js` bổ sung `runCenter`: thanh sticky chỉ hiện khi có feature chạy. Nó thuần quan sát state local hiện hữu của toàn bộ feature, hiển thị card tiến độ/status và điều hướng về phần cấu hình tương ứng.
+- Không tạo stop path mới: nút card bấm đúng Stop button sẵn có, bảo toàn stop broadcast, run ID và cleanup từng state machine. Khi thêm feature mới, chỉ thêm metadata vào `RUN_CENTER_FEATURES`, không ghép state hay selector với feature khác.
+
 This document packages the working context for moving the project to another computer or another Codex task. It intentionally contains no API key, cookie, Facebook session, or private account data.
 
 ## 1. Project snapshot
 
 - Project: `fb-auto-add`
 - Type: Chrome Manifest V3 unpacked extension
-- Current source version: **1.9.37**
-- Last handoff date: 2026-09-07 (Asia/Ho_Chi_Minh)
+- Current source version: **1.9.133**
+- Last handoff date: 2026-09-13 (Asia/Ho_Chi_Minh)
 - Primary site: Facebook web UI; selectors and labels are expected to change over time.
 - Existing fallback copy: `backup_v1.8.12/` (keep it intact).
 - Canonical logic reference: `PROJECT_LOGIC.md`.
@@ -23,6 +114,26 @@ This document packages the working context for moving the project to another com
 - v1.9.15 thêm ô link nhóm nguồn/đích theo từng dòng, vẫn gộp với checkbox và loại trùng; hỗ trợ `URL | Tên nhóm`. B2 có `trendGroupPrompt` dùng `{groupName}`; link-only target lấy tên heading Facebook sau khi mở nhóm rồi mới gọi AI, không dùng slug/ID làm tên nhóm nếu có thể xác định tên thật.
 - Đã test read-only trên nhóm công khai trong Chrome sau khi reload extension + reload tab: chẩn đoán đạt 1/1 parse thành công, B1 lấy được 6/10 bài ở lượt test ngắn, hiển thị danh sách và kết thúc an toàn; không chạy B2/không đăng bài.
 - `popup.js:getActiveTab()` ưu tiên Facebook tab active ở mọi cửa sổ, tránh lỗi popup gửi chẩn đoán/quét nhóm vào cửa sổ popup nội bộ.
+- v1.9.87: Facebook hiện dùng `Trả lời dưới tên X` cho composer comment chính trên trang permalink nhưng `Trả lời với vai trò X` cho composer reply con. `isReplyCommentBox` chỉ loại nhãn reply có đích rõ ràng, để Comment AI nhóm nhận đúng composer chính mà vẫn tránh trả lời chồng vào comment con.
+- v1.9.88: `groupCommentDraftScope` ghi nhớ dialog sở hữu composer. Cleanup chấp nhận replacement có đúng text/đoạn text đã nhập trong chính dialog đó ngay cả khi Facebook đổi node làm identity/signature tạm thời lệch; không mở route tiếp khi draft còn chữ.
+- v1.9.92: Comment AI nhóm ghi nhớ ngắn hạn các text do chính lượt AI sở hữu. Khi Facebook giữ composer nổi của bài trước sau khi đổi permalink, cleanup quét/dọn orphan composer theo đoạn text đã sở hữu trước khi xử lý/chuyển bài; Stop/Reset dọn xong mới xóa ownership memory và không chạm draft không khớp AI.
+- v1.9.93: Comment AI nhóm xử lý mọi bài đăng cấp cao có nút Bình luận, không loại caption ngắn hoặc comment AI trùng ý comment khác; bài ảnh dùng alt text/ngữ cảnh dự phòng. Lạc permalink hoặc composer tải chậm không đánh dấu bài đã xử lý ngay, thử lại tối đa 3 lần; vẫn loại reply/comment con, Messenger, quảng cáo và Reel/Watch, chỉ tăng bộ đếm sau proof.
+- v1.9.94: Sau khi mở nhóm, Comment AI chờ feed render 6 giây rồi polling tối đa 18 vòng x 2,5 giây nếu chưa có bài; trạng thái hiển thị đang chờ feed để không kết thúc 0 bài trên mạng chậm.
+- v1.9.95: Riêng Comment AI nhóm không coi `data-ad-preview="message"` đứng một mình là quảng cáo; giữ các bài thường có nút Bình luận chính, nhưng vẫn loại dấu hiệu quảng cáo rõ ràng, Reel/Watch, reply/comment con và Messenger.
+- v1.9.100: Đã tái hiện Kết bạn theo Gợi ý có 20 nút “Thêm bạn bè” hợp lệ nhưng state đứng ở “Đang chuẩn bị nguồn”: resume run cũ và Start run mới đua nhau qua `loopActive`. `friendLoop` tự handoff sang run active mới trong `finally`, nên không kẹt sau chuyển route/reload.
+- v1.9.101: Đã tái hiện Xác nhận lời mời dừng ngay với `Cannot read properties of undefined (reading 'hometown')`: state tạm trước điều hướng có `confirmFilters`, còn resume đọc `filters`. Normalizer nhận cả hai và vòng resume chuẩn hóa trước lọc; handoff run mới cũng được áp dụng riêng cho state machine xác nhận.
+- v1.9.102: Xác nhận lời mời chỉ còn ngưỡng bạn chung + giãn cách/giới hạn chung. Đã bỏ UI và logic đọc nhóm chung, quê quán, trường học, ảnh đại diện; không mở profile để lấy dữ liệu bổ sung. Ngưỡng 0 xác nhận mọi card hợp lệ, ngưỡng >0 bỏ card thiếu/chưa đủ số bạn chung.
+- v1.9.103: Đã quan sát Facebook render “Đã chấp nhận lời mời kết bạn” cho đúng profile trong khi counter vẫn 0 vì code đọc node nút cũ sau re-render. Proof nay re-find card theo profile key hoặc nhận live message mới rồi mới tăng counter.
+- v1.9.104: Tham gia nhóm theo từ khóa lấy tên từ link tiêu đề cùng URL nhóm, không còn dùng link ảnh/URL; selector Join khóa vào control trực tiếp của card. Lượt Facebook không xác nhận vẫn phải chờ delay trước lần bấm kế tiếp.
+- v1.9.105: Tham gia nhóm hiển thị countdown delay từng giây và polling Stop khi chờ. Popup có `groupAiUsage` để audit việc AI viết đủ/thiếu câu trả lời mở theo nhóm; câu nội quy chỉ dùng mẫu. Audit không chứa câu hỏi, câu trả lời hay API key.
+- v1.9.107: Luồng Khám phá được xác nhận trên DOM Facebook hiện tại có hai khu “Nhóm của bạn bè” và “Gợi ý khác”. Extractor nay scope đúng “Gợi ý khác”, lấy card/tên nhóm đúng và chờ giãn cách có countdown cả sau proof thất bại.
+- v1.9.99: `groupCommentHistory` chỉ còn audit; lượt Start mới không dùng history cũ để bỏ qua bài đang thấy. Chỉ guard cùng run ID (reload mơ hồ) và proof comment thật của chính tài khoản trong DOM mới chặn đăng, đáp ứng luồng đọc/comment mọi bài hiện tại.
+- v1.9.98: Sau proof comment trong dialog/permalink, `continueGroupComment` persist đầy đủ counter/history rồi quay về route nhóm trước lượt tiếp. Không tiếp tục quét card nền ở permalink, vì Facebook có thể gán cùng permalink cho nhiều card và làm composer bài tiếp theo không tìm thấy.
+- v1.9.97: Đã tái hiện Facebook mở permalink bằng dialog nhưng giữ card cùng permalink ở nền: Composer nền có thể được focus/gõ trong khi editor dialog đang trống. `findGroupPostDetailComposer` khóa Comment AI nhóm vào editor `role="dialog"` đang hiển thị trước mọi fallback; route permalink không còn đủ để chọn card nền.
+- v1.9.96: Comment AI nhóm ưu tiên composer mới xuất hiện sau cú click, kiểm tra đúng bài/permalink và giữ node vừa mở trong lúc Facebook re-render; composer cũ phía trên chỉ là fallback sau thời gian chờ, tránh nội dung nhảy xuống ô khác.
+- v1.9.91: Với layout lớp bài viết không có `role="dialog"`, cleanup dùng permalink hiện tại làm scope fallback khi ownership memory còn hiệu lực, dọn replacement đúng bài trước khi cho phép dừng/chuyển nhóm.
+- v1.9.90: Sau khi Facebook xác nhận comment trên permalink, cleanup nhận diện composer replacement theo permalink đúng bài ngay cả khi scope/identity DOM cũ biến mất; không đóng overlay/chuyển tiếp khi fragment do lượt AI sở hữu còn sót.
+- v1.9.89: Group Comment AI chờ editor ổn định sau khi mở, ưu tiên replacement cùng bài, focus lại và xác nhận ô vẫn rỗng trước khi gõ để giảm hụt phần đầu câu khi Facebook re-render composer.
 
 ## 2. How to transfer to a new machine
 
@@ -259,7 +370,7 @@ This document packages the working context for moving the project to another com
 
 `getUnifiedAiConfig()` / `persistUnifiedAiConfig()` in `popup.js` are the single source of truth. Provider profiles are kept separately so changing provider does not erase another provider's key. Configuration is persisted in extension storage, not this repository.
 
-Supported paths currently include Gemini, OpenAI-compatible providers (OpenAI/Groq/OpenRouter/DeepSeek/Mistral), Claude/Muse, and Custom URL. Gemini uses the current Interactions API path implemented in `background.js`; preserve the user's selected model and Custom URL. Every AI feature should use the same saved config and the existing Test API action.
+Supported paths currently include Gemini, OpenAI-compatible providers (OpenAI/Groq/OpenRouter/DeepSeek/Mistral), Claude/Muse, and Custom URL. Gemini uses the API-key `models/{model}:generateContent` path implemented in `background.js`; preserve the user's selected model and Custom URL. Every AI feature should use the same saved config and the existing Test API action.
 
 ## 6. Debugging protocol for a new Codex session
 
